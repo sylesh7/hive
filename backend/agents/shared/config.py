@@ -1,0 +1,69 @@
+"""
+Shared configuration for all HiveBid agents.
+"""
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from backend/ root
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_ENV_PATH)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+AXL_NODES_DIR = BACKEND_ROOT / "axl_nodes"
+TASKS_DIR = BACKEND_ROOT / "tasks"
+AXL_BINARY = BACKEND_ROOT / os.getenv("AXL_BINARY_PATH", "axl/node.exe")
+
+# ── Network ───────────────────────────────────────────────────────────────────
+BASE_SEPOLIA_RPC_URL = os.getenv("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
+BASE_SEPOLIA_CHAIN_ID = 84532
+
+# ── ERC-8004 Contract Addresses (Base Sepolia) ────────────────────────────────
+ERC8004_IDENTITY_ADDRESS  = "0x8004AA63c570c570eBF15376c0dB199918BFe9Fb"
+ERC8004_REPUTATION_ADDRESS = "0x8004bd8daB57f14Ed299135749a5CB5c42d341BF"
+
+# ── Wallets ───────────────────────────────────────────────────────────────────
+CLIENT_WALLET_PRIVATE_KEY = os.getenv("CLIENT_WALLET_PRIVATE_KEY", "")
+
+# ── Groq ─────────────────────────────────────────────────────────────────────
+GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL    = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# ── AXL node ports ────────────────────────────────────────────────────────────
+# api_port  = HTTP API port (Python agent talks to this)
+# tls_port  = P2P listen port (AXL nodes peer with each other)
+# tcp_port  = internal gVisor TCP port (must be unique per node)
+AXL_PORTS = {
+    "client":        {"api_port": 9002, "tls_port": 9102, "tcp_port": 7000},
+    "scout_cost":    {"api_port": 9012, "tls_port": 9112, "tcp_port": 7001},
+    "scout_quality": {"api_port": 9013, "tls_port": 9113, "tcp_port": 7002},
+    "scout_speed":   {"api_port": 9014, "tls_port": 9114, "tcp_port": 7003},
+    "worker_a":      {"api_port": 9015, "tls_port": 9115, "tcp_port": 7004},
+    "worker_b":      {"api_port": 9016, "tls_port": 9116, "tcp_port": 7005},
+    "worker_c":      {"api_port": 9017, "tls_port": 9117, "tcp_port": 7006},
+    "worker_d":      {"api_port": 9018, "tls_port": 9118, "tcp_port": 7007},
+    "evaluator":     {"api_port": 9019, "tls_port": 9119, "tcp_port": 7008},
+}
+
+# ── WebSocket / REST ──────────────────────────────────────────────────────────
+WS_PORT   = int(os.getenv("WS_PORT", "8765"))
+REST_PORT = int(os.getenv("REST_PORT", "8766"))
+
+# ── Auction ───────────────────────────────────────────────────────────────────
+DEFAULT_AUCTION_WINDOW_SECS = int(os.getenv("DEFAULT_AUCTION_WINDOW_SECS", "90"))
+
+# ── AXL peer-to-peer config helpers ──────────────────────────────────────────
+def axl_base_url(agent_name: str) -> str:
+    """HTTP API base URL for a given agent's AXL node."""
+    return f"http://127.0.0.1:{AXL_PORTS[agent_name]['api_port']}"
+
+def axl_tls_url(agent_name: str) -> str:
+    """TLS peer address for a given agent's AXL node (used in Peers list)."""
+    return f"tls://127.0.0.1:{AXL_PORTS[agent_name]['tls_port']}"
+
+def axl_config_path(agent_name: str) -> Path:
+    return AXL_NODES_DIR / agent_name / "node-config.json"
+
+def axl_key_path(agent_name: str) -> Path:
+    return AXL_NODES_DIR / agent_name / "private.pem"

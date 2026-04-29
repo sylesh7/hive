@@ -1,0 +1,8 @@
+httpx>=0.28
+websockets>=15.0
+web3>=6.15
+python-dotenv>=1.0
+eth-account>=0.11
+cryptography>=46.0
+groq>=1.0
+anyio>=4.0

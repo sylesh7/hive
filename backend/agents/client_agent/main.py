@@ -1,0 +1,495 @@
+"""
+Client Agent — main entry point.
+
+Responsibilities:
+  - Manage task lifecycle (create → auction → escrow → delivery → settlement)
+  - Broadcast task announcements over AXL
+  - Collect bids and route them to scout agents
+  - Accept scout recommendations and trigger escrow via KeeperHub
+  - Receive deliveries and route to evaluator
+  - Release or refund payment based on verdict
+  - Write reputation feedback to ERC-8004
+  - Push all events to the frontend over WebSocket
+"""
+from __future__ import annotations
+import asyncio
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+
+# ── Shared imports ────────────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from agents.shared.config import (
+    AXL_PORTS, WS_PORT, REST_PORT,
+    axl_base_url, axl_key_path,
+    CLIENT_WALLET_PRIVATE_KEY,
+)
+from agents.shared.axl_client import AXLClient
+from agents.shared.message_types import (
+    TaskAnnouncement, Bid, BidAccepted, BidRejected,
+    BidForward, WorkerStatus, Delivery, EvaluationVerdict,
+    ScoutRecommendation, parse_message,
+)
+from agents.shared.crypto import load_private_key, sign_message, sha256_hex
+from agents.shared.erc8004 import ERC8004Client
+
+from agents.client_agent.task_manager import TaskManager, TaskState
+from agents.client_agent.auction_manager import AuctionManager
+from agents.client_agent.ws_server import WSServer
+from agents.client_agent import keeperhub_stub as keeperhub
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [CLIENT] %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# ── Peer registry (filled after AXL nodes boot) ──────────────────────────────
+# Maps agent_name → peer_id (populated via /topology after startup)
+PEER_REGISTRY: dict[str, str] = {}
+
+SCOUT_NAMES  = ["scout_cost", "scout_quality", "scout_speed"]
+WORKER_NAMES = ["worker_a", "worker_b", "worker_c", "worker_d"]
+EVAL_NAME    = "evaluator"
+
+
+class ClientAgent:
+    def __init__(self):
+        self.axl = AXLClient(axl_base_url("client"), agent_name="client")
+        self.task_mgr = TaskManager()
+        self._auctions: dict[str, AuctionManager] = {}
+        self._private_key = load_private_key(axl_key_path("client"))
+        self._erc8004 = ERC8004Client(CLIENT_WALLET_PRIVATE_KEY)
+        self._ws = WSServer(
+            ws_port=WS_PORT,
+            rest_port=REST_PORT,
+            command_handler=self._handle_command,
+        )
+        self._stop = asyncio.Event()
+        self._self_peer_id: str = ""
+        self._nft_token_id: int = 0
+
+    # ── Startup ───────────────────────────────────────────────────────────────
+
+    async def start(self):
+        async with self.axl:
+            logger.info("Waiting for AXL node…")
+            if not await self.axl.wait_ready():
+                logger.error("AXL node not ready. Exiting.")
+                return
+
+            self._self_peer_id = await self.axl.get_self_peer_id()
+            logger.info(f"Client peer ID: {self._self_peer_id}")
+
+            # Register ERC-8004 identity (skip if already registered)
+            await self._ensure_identity()
+
+            # Populate peer registry from topology
+            await self._refresh_peers()
+
+            logger.info("Client agent ready.")
+            await self._ws.broadcast("AGENT_READY", {"peer_id": self._self_peer_id})
+
+            await asyncio.gather(
+                self.axl.recv_loop(self._on_message, stop_event=self._stop),
+                self._ws.start(),
+                self._peer_refresh_loop(),
+            )
+
+    async def _ensure_identity(self):
+        """Register on ERC-8004 if not already done."""
+        identity_file = Path(__file__).parent / "identity.json"
+        if identity_file.exists():
+            data = json.loads(identity_file.read_text())
+            self._nft_token_id = data.get("token_id", 0)
+            logger.info(f"ERC-8004 identity loaded: tokenId={self._nft_token_id}")
+            return
+        try:
+            tx_hash, token_id = self._erc8004.register_agent(
+                name="HiveBid-ClientAgent",
+                metadata_uri="https://hivebid.xyz/agents/client.json",
+                capabilities=["task_posting", "auction_management", "escrow"],
+            )
+            self._nft_token_id = token_id
+            identity_file.write_text(json.dumps({"token_id": token_id, "tx_hash": tx_hash}))
+            logger.info(f"ERC-8004 registered: tokenId={token_id} tx={tx_hash}")
+        except Exception as e:
+            logger.warning(f"ERC-8004 registration failed (continuing): {e}")
+
+    async def _refresh_peers(self):
+        """Update PEER_REGISTRY from AXL topology."""
+        try:
+            peers = await self.axl.list_peers()
+            for p in peers:
+                pid = p.get("id", "")
+                label = p.get("label", p.get("name", ""))
+                if label and pid:
+                    PEER_REGISTRY[label] = pid
+        except Exception as e:
+            logger.debug(f"Peer refresh error: {e}")
+
+    async def _peer_refresh_loop(self):
+        """Periodically refresh peer registry."""
+        while not self._stop.is_set():
+            await asyncio.sleep(10)
+            await self._refresh_peers()
+
+    # ── Inbound message router ────────────────────────────────────────────────
+
+    async def _on_message(self, sender_peer_id: str, raw: dict):
+        msg_type = raw.get("type", "")
+        logger.info(f"← {msg_type} from {sender_peer_id[:8]}…")
+
+        if msg_type == "BID":
+            await self._handle_bid(raw)
+        elif msg_type == "SCOUT_RECOMMENDATION":
+            await self._handle_scout_rec(raw)
+        elif msg_type == "WORKER_STATUS":
+            await self._handle_worker_status(raw)
+        elif msg_type == "DELIVERY":
+            await self._handle_delivery(raw)
+        elif msg_type == "EVALUATION_VERDICT":
+            await self._handle_verdict(raw)
+        else:
+            logger.debug(f"Unhandled message type: {msg_type}")
+
+    # ── Task creation ─────────────────────────────────────────────────────────
+
+    async def create_and_broadcast_task(self, spec: dict) -> dict:
+        """Create a task record and broadcast it to all worker peers."""
+        rec = self.task_mgr.create_task(spec)
+        task_id = rec.task_id
+
+        announcement = TaskAnnouncement(
+            task_id=task_id,
+            title=spec.get("title", ""),
+            description=spec.get("description", ""),
+            task_type=spec.get("task_type", "other"),
+            max_budget_usdc=float(spec.get("max_budget_usdc", 0)),
+            deadline_unix=float(spec.get("deadline_unix", time.time() + 3600)),
+            auction_window_secs=int(spec.get("auction_window_secs", 90)),
+            deliverable_spec=spec.get("deliverable_spec", {}),
+            client_peer_id=self._self_peer_id,
+            required_capabilities=spec.get("required_capabilities", [spec.get("task_type", "")]),
+        )
+
+        self.task_mgr.transition(task_id, TaskState.BROADCASTING)
+
+        # Open auction
+        auction = AuctionManager(
+            task_id=task_id,
+            window_secs=announcement.auction_window_secs,
+            on_close=self._on_auction_close,
+        )
+        self._auctions[task_id] = auction
+        end_time = auction.open()
+
+        self.task_mgr.transition(
+            task_id, TaskState.AUCTION_OPEN,
+            auction_start=announcement.timestamp,
+            auction_end=end_time,
+        )
+
+        # Broadcast to all worker peers
+        worker_peer_ids = [PEER_REGISTRY[n] for n in WORKER_NAMES if n in PEER_REGISTRY]
+        sent = await self.axl.broadcast(worker_peer_ids, announcement.to_dict())
+        logger.info(f"Task {task_id} broadcast to {sent}/{len(worker_peer_ids)} workers")
+
+        await self._ws.broadcast("TASK_CREATED", {
+            "task": rec.to_dict(),
+            "auction_end": end_time,
+            "peer_count": sent,
+        })
+
+        return rec.to_dict()
+
+    # ── Bid handling ──────────────────────────────────────────────────────────
+
+    async def _handle_bid(self, raw: dict):
+        task_id = raw.get("task_id", "")
+        auction = self._auctions.get(task_id)
+        if not auction:
+            return
+
+        if not auction.add_bid(raw):
+            # Auction already closed
+            return
+
+        self.task_mgr.add_bid(task_id, raw)
+
+        # Push to frontend
+        await self._ws.broadcast("NEW_BID", {"task_id": task_id, "bid": raw})
+
+        # Forward to scout agents
+        rec = self.task_mgr.get(task_id)
+        forward = BidForward(
+            task_id=task_id,
+            bid=raw,
+            task_spec=rec.spec if rec else {},
+        )
+        scout_peer_ids = [PEER_REGISTRY[n] for n in SCOUT_NAMES if n in PEER_REGISTRY]
+        await self.axl.broadcast(scout_peer_ids, forward.to_dict())
+
+    # ── Scout recommendations ─────────────────────────────────────────────────
+
+    async def _handle_scout_rec(self, raw: dict):
+        task_id  = raw.get("task_id", "")
+        strategy = raw.get("strategy", "")
+        top_bid  = raw.get("top_bid", {})
+
+        auction = self._auctions.get(task_id)
+        if auction:
+            auction.set_scout_recommendation(strategy, top_bid)
+
+        self.task_mgr.set_scout_recommendation(task_id, strategy, top_bid)
+        await self._ws.broadcast("SCOUT_UPDATE", {
+            "task_id":  task_id,
+            "strategy": strategy,
+            "top_bid":  top_bid,
+            "reason":   raw.get("reason", ""),
+        })
+
+    # ── Auction close / acceptance ────────────────────────────────────────────
+
+    async def _on_auction_close(self, task_id: str, winning_bid: dict | None):
+        """Called automatically when auction timer expires."""
+        if not winning_bid:
+            logger.warning(f"Auction {task_id} closed with no bids — cancelling")
+            self.task_mgr.transition(task_id, TaskState.CANCELLED)
+            await self._ws.broadcast("AUCTION_CANCELLED", {"task_id": task_id})
+            return
+
+        await self._accept_bid(task_id, winning_bid)
+
+    async def accept_bid_for_task(self, task_id: str, strategy: str | None = None) -> dict:
+        """Manually accept a bid (frontend command)."""
+        auction = self._auctions.get(task_id)
+        if not auction:
+            return {"error": "auction not found"}
+
+        rec = self.task_mgr.get(task_id)
+        if not rec:
+            return {"error": "task not found"}
+
+        winning_bid = None
+        if strategy:
+            winning_bid = rec.scout_recommendations.get(strategy)
+        if not winning_bid:
+            winning_bid = auction._select_winner()
+
+        if not winning_bid:
+            return {"error": "no bids to accept"}
+
+        await auction.close(winning_bid)
+        return {"accepted": True, "bid": winning_bid}
+
+    async def _accept_bid(self, task_id: str, winning_bid: dict):
+        self.task_mgr.transition(
+            task_id, TaskState.AUCTION_CLOSED, winning_bid=winning_bid
+        )
+        await self._ws.broadcast("AUCTION_CLOSED", {
+            "task_id":    task_id,
+            "winning_bid": winning_bid,
+        })
+
+        # Notify winning worker
+        winner_peer_id = winning_bid.get("worker_peer_id", "")
+        if winner_peer_id:
+            accepted_msg = BidAccepted(
+                task_id=task_id,
+                agreed_price_usdc=winning_bid.get("bid_price_usdc", 0),
+                worker_peer_id=winner_peer_id,
+            )
+            await self.axl.send(winner_peer_id, accepted_msg.to_dict())
+
+        # Notify losers
+        for agent_name, peer_id in PEER_REGISTRY.items():
+            if agent_name.startswith("worker") and peer_id != winner_peer_id:
+                rej = BidRejected(task_id=task_id, worker_peer_id=peer_id, reason="Another bid was selected")
+                await self.axl.send(peer_id, rej.to_dict())
+
+        # Lock escrow via KeeperHub
+        await self._lock_escrow(task_id, winning_bid)
+
+    async def _lock_escrow(self, task_id: str, winning_bid: dict):
+        self.task_mgr.transition(task_id, TaskState.ESCROW_PENDING)
+        await self._ws.broadcast("ESCROW_PENDING", {"task_id": task_id})
+
+        try:
+            tx_hash = await keeperhub.lock_escrow(
+                task_id=task_id,
+                amount_usdc=winning_bid.get("bid_price_usdc", 0),
+                worker_wallet=winning_bid.get("worker_wallet", ""),
+            )
+            self.task_mgr.transition(
+                task_id, TaskState.ESCROW_LOCKED, escrow_tx_hash=tx_hash
+            )
+            await self._ws.broadcast("ESCROW_LOCKED", {
+                "task_id": task_id,
+                "tx_hash": tx_hash,
+                "amount":  winning_bid.get("bid_price_usdc"),
+            })
+            self.task_mgr.transition(task_id, TaskState.DELIVERY_PENDING)
+        except Exception as e:
+            logger.error(f"Escrow lock failed for {task_id}: {e}")
+            await self._ws.broadcast("ERROR", {"task_id": task_id, "error": str(e)})
+
+    # ── Delivery ──────────────────────────────────────────────────────────────
+
+    async def _handle_worker_status(self, raw: dict):
+        task_id = raw.get("task_id", "")
+        await self._ws.broadcast("WORKER_STATUS", raw)
+
+    async def _handle_delivery(self, raw: dict):
+        task_id = raw.get("task_id", "")
+        self.task_mgr.transition(
+            task_id, TaskState.DELIVERY_RECEIVED, delivery=raw
+        )
+        await self._ws.broadcast("DELIVERY_RECEIVED", {"task_id": task_id, "delivery": raw})
+
+        # Forward to evaluator
+        eval_peer_id = PEER_REGISTRY.get(EVAL_NAME, "")
+        if eval_peer_id:
+            rec = self.task_mgr.get(task_id)
+            eval_payload = {
+                **raw,
+                "task_spec": rec.spec if rec else {},
+                "client_peer_id": self._self_peer_id,
+            }
+            await self.axl.send(eval_peer_id, eval_payload)
+            self.task_mgr.transition(task_id, TaskState.EVALUATING)
+            await self._ws.broadcast("EVALUATING", {"task_id": task_id})
+        else:
+            logger.warning("Evaluator peer not found — auto-passing")
+            await self._settle(task_id, "PASS", "Auto-passed: evaluator unavailable")
+
+    # ── Evaluation & settlement ───────────────────────────────────────────────
+
+    async def _handle_verdict(self, raw: dict):
+        task_id = raw.get("task_id", "")
+        verdict = raw.get("verdict", "FAIL")
+        reason  = raw.get("reason", "")
+
+        self.task_mgr.transition(
+            task_id, TaskState.EVALUATING,
+            verdict=verdict, verdict_reason=reason
+        )
+        await self._ws.broadcast("EVALUATION_VERDICT", {
+            "task_id": task_id,
+            "verdict": verdict,
+            "reason":  reason,
+        })
+        await self._settle(task_id, verdict, reason)
+
+    async def _settle(self, task_id: str, verdict: str, reason: str):
+        rec = self.task_mgr.get(task_id)
+        if not rec or not rec.winning_bid:
+            return
+
+        winning_bid = rec.winning_bid
+        amount      = winning_bid.get("bid_price_usdc", 0)
+        worker_wallet = winning_bid.get("worker_wallet", "")
+
+        if verdict == "PASS":
+            tx_hash = await keeperhub.release_payment(task_id, worker_wallet, amount)
+            self.task_mgr.transition(
+                task_id, TaskState.SETTLED, release_tx_hash=tx_hash
+            )
+            await self._ws.broadcast("PAYMENT_RELEASED", {
+                "task_id":    task_id,
+                "tx_hash":    tx_hash,
+                "amount":     amount,
+                "worker":     winning_bid.get("worker_name"),
+            })
+            # Write reputation feedback
+            await self._write_reputation(task_id, winning_bid, score=5)
+        else:
+            tx_hash = await keeperhub.refund(task_id, "", amount)
+            self.task_mgr.transition(
+                task_id, TaskState.REFUNDED, refund_tx_hash=tx_hash
+            )
+            await self._ws.broadcast("PAYMENT_REFUNDED", {
+                "task_id": task_id,
+                "tx_hash": tx_hash,
+                "reason":  reason,
+            })
+            await self._write_reputation(task_id, winning_bid, score=1)
+
+    async def _write_reputation(self, task_id: str, winning_bid: dict, score: int):
+        nft_id = winning_bid.get("worker_identity_nft_id", "")
+        if not nft_id:
+            return
+        try:
+            tx = self._erc8004.submit_feedback(
+                agent_token_id=int(nft_id),
+                score=score,
+                tags=["hivebid", "automated"],
+                evidence_url=f"https://hivebid.xyz/tasks/{task_id}",
+            )
+            self.task_mgr.transition(task_id, task_id, reputation_tx_hash=tx)
+            await self._ws.broadcast("REPUTATION_UPDATED", {
+                "task_id": task_id,
+                "score":   score,
+                "tx_hash": tx,
+            })
+        except Exception as e:
+            logger.warning(f"Reputation write failed: {e}")
+
+    # ── Frontend command handler ──────────────────────────────────────────────
+
+    async def _handle_command(self, cmd: dict) -> dict:
+        action = cmd.get("action", "")
+        logger.info(f"[Command] {action}")
+
+        if action == "CREATE_TASK" or "title" in cmd:
+            return await self.create_and_broadcast_task(cmd)
+
+        elif action == "ACCEPT_BID":
+            task_id  = cmd.get("task_id", "")
+            strategy = cmd.get("strategy")
+            return await self.accept_bid_for_task(task_id, strategy)
+
+        elif action == "CANCEL_AUCTION":
+            task_id = cmd.get("task_id", "")
+            auction = self._auctions.get(task_id)
+            if auction:
+                await auction.close(None)
+                self.task_mgr.transition(task_id, TaskState.CANCELLED)
+                await self._ws.broadcast("AUCTION_CANCELLED", {"task_id": task_id})
+            return {"cancelled": True}
+
+        elif action == "GET_TASKS":
+            return {
+                "active":  [t.to_dict() for t in self.task_mgr.list_active()],
+                "history": [t.to_dict() for t in self.task_mgr.list_history()],
+            }
+
+        elif action == "GET_TASK":
+            task_id = cmd.get("task_id", "")
+            rec = self.task_mgr.get(task_id)
+            return rec.to_dict() if rec else {"error": "not found"}
+
+        elif action == "GET_STATUS":
+            return {
+                "peer_id":    self._self_peer_id,
+                "nft_token_id": self._nft_token_id,
+                "peers":      PEER_REGISTRY,
+                "active_tasks": len(self.task_mgr.list_active()),
+            }
+
+        return {"error": f"unknown action: {action}"}
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+async def main():
+    agent = ClientAgent()
+    await agent.start()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
