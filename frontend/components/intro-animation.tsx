@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 
-const LETTERS = ["A", "G", "E", "N", "T", "I", "C"]
+const LETTERS = ["H", "I", "V", "E"]
 
 const LETTER_IN_STAGGER  = 90    // ms between each letter appearing
 const LETTER_IN_DUR      = 700   // duration of each letter appear transition
@@ -24,20 +24,25 @@ export const HERO_REVEAL_MS = CURTAIN_DELAY + CURTAIN_DURATION - 150
 
 type Phase = "idle" | "in" | "out" | "done"
 
+const SESSION_KEY = "hivebid_intro_done"
+
 export function IntroAnimation({ onDone }: { onDone: () => void }) {
-  const [phase, setPhase] = useState<Phase>("idle")
+  const alreadyPlayed = typeof window !== "undefined" && sessionStorage.getItem(SESSION_KEY) === "1"
+  const [phase, setPhase] = useState<Phase>(alreadyPlayed ? "done" : "idle")
   const [curtainUp, setCurtainUp] = useState(false)
 
   useEffect(() => {
-    // Tiny delay so the browser has painted before we start transitioning
+    if (alreadyPlayed) { onDone(); return }
+
     const t0 = setTimeout(() => setPhase("in"), 80)
     const t1 = setTimeout(() => setPhase("out"), LETTERS_IN_TOTAL)
     const t2 = setTimeout(() => setCurtainUp(true), CURTAIN_DELAY)
-    const t3 = setTimeout(() => onDone(), HERO_REVEAL_MS)
+    const t3 = setTimeout(() => { onDone(); sessionStorage.setItem(SESSION_KEY, "1") }, HERO_REVEAL_MS)
     const t4 = setTimeout(() => setPhase("done"), ANIM_TOTAL)
 
     return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4) }
-  }, [onDone])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   if (phase === "done") return null
 
@@ -50,7 +55,7 @@ export function IntroAnimation({ onDone }: { onDone: () => void }) {
         style={{
           bottom: curtainUp ? "100%" : "0%",
           transition: curtainUp ? "bottom 1.3s cubic-bezier(0.76, 0, 0.24, 1)" : "none",
-          background: "#f5f4f1",
+          background: "#0B0B09",
         }}
       />
 
@@ -83,7 +88,7 @@ export function IntroAnimation({ onDone }: { onDone: () => void }) {
             return (
               <span
                 key={i}
-                className="font-sans font-bold text-[#111] leading-none select-none"
+                className="font-sans font-bold text-[#F0EFEA] leading-none select-none"
                 style={{
                   fontSize: `calc((100vw - 64px) / ${LETTERS.length})`,
                   letterSpacing: "0.05em",

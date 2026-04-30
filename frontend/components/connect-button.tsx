@@ -1,7 +1,10 @@
 "use client"
 
-import { useRef } from "react"
+import { useRef, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { useWeb3Auth } from "@/context/web3auth"
+
+const ONBOARDING_KEY = "hivebid_onboarded"
 
 interface ConnectButtonProps {
   className?: string
@@ -10,8 +13,16 @@ interface ConnectButtonProps {
 
 export function ConnectButton({ className = "", label = "CONNECT WALLET" }: ConnectButtonProps) {
   const { web3Auth, isConnected, status } = useWeb3Auth()
+  const router = useRouter()
   const isConnecting = status === "connecting"
   const userInitiated = useRef(false)
+
+  useEffect(() => {
+    if (!userInitiated.current || status !== "connected") return
+    userInitiated.current = false
+    const onboarded = typeof window !== "undefined" && localStorage.getItem(ONBOARDING_KEY) === "1"
+    router.push(onboarded ? "/dashboard" : "/onboarding")
+  }, [status, router])
 
   const handleConnect = () => {
     if (isConnected) {

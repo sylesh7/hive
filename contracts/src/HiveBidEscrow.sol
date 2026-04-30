@@ -40,8 +40,8 @@ contract HiveBidEscrow is ReentrancyGuard {
     }
 
     /**
-     * Lock USDC into escrow for a task. Called by client agent via KeeperHub after bid accepted.
-     * Client must have approved this contract for `amount` USDC before calling.
+     * Lock USDC into escrow. msg.sender is treated as client.
+     * Caller must have approved this contract for `amount` USDC.
      */
     function lock(
         bytes32 taskId,
@@ -49,10 +49,35 @@ contract HiveBidEscrow is ReentrancyGuard {
         uint256 amount,
         uint256 deadline
     ) external nonReentrant {
+        _lock(taskId, msg.sender, worker, amount, deadline);
+    }
+
+    /**
+     * Lock on behalf of a client. Used by KeeperHub's managed wallet acting as intermediary.
+     * KeeperHub wallet must hold USDC and have approved this contract.
+     * `client` is stored for the refund path so funds return to the right address.
+     */
+    function lockFor(
+        bytes32 taskId,
+        address client,
+        address worker,
+        uint256 amount,
+        uint256 deadline
+    ) external nonReentrant {
+        _lock(taskId, client, worker, amount, deadline);
+    }
+
+    function _lock(
+        bytes32 taskId,
+        address client,
+        address worker,
+        uint256 amount,
+        uint256 deadline
+    ) internal {
         if (tasks[taskId].status != Status.Empty) revert TaskExists();
 
         tasks[taskId] = Task({
-            client: msg.sender,
+            client: client,
             worker: worker,
             amount: amount,
             status: Status.Locked,

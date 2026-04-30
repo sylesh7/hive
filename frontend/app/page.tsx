@@ -1,11 +1,13 @@
 "use client"
 
 import React, { useRef, useEffect, useState, useCallback } from "react"
-import { IntroAnimation, HERO_REVEAL_MS } from "@/components/intro-animation"
+import { IntroAnimation } from "@/components/intro-animation"
 import { PixelIcon } from "@/components/pixel-icon"
 import { RevealText } from "@/components/reveal-text"
 import { MobileNav } from "@/components/mobile-nav"
 import { ConnectButton } from "@/components/connect-button"
+import { HexagonPattern } from "@/components/ui/hexagon-pattern"
+import { ComicText } from "@/components/ui/comic-text"
 import { useWeb3Auth } from "@/context/web3auth"
 import { useRouter } from "next/navigation"
 
@@ -50,132 +52,13 @@ function Tag({ children }: { children: React.ReactNode }) {
   )
 }
 
-// ─── Live mock auction ────────────────────────────────────────────────────────
-const INITIAL_BIDS = [
-  { id: 1, name: "BrandCraft",  price: 28, prevPrice: null as number | null, rep: 4.8, eta: "2h", isNew: false },
-  { id: 2, name: "DesignerPro", price: 32, prevPrice: null as number | null, rep: 4.9, eta: "1h", isNew: false },
-]
-
-function MockAuction() {
-  const [bids, setBids] = useState(INITIAL_BIDS)
-  const [countdown, setCountdown] = useState(52)
-  const [phase, setPhase] = useState<"running" | "done">("running")
-  const [scoutPick, setScoutPick] = useState<string>("BrandCraft")
-
-  useEffect(() => {
-    // Only animate when running — prevents duplicate-key bug on loop reset
-    if (phase !== "running") return
-
-    // New bid arrives
-    const t1 = setTimeout(() => {
-      setBids(prev => [...prev, { id: Date.now(), name: "QuickLogos", price: 22, prevPrice: null, rep: 4.3, eta: "3h", isNew: true }])
-      setScoutPick("QuickLogos")
-      setTimeout(() => setBids(prev => prev.map(b => ({ ...b, isNew: false }))), 800)
-    }, 1800)
-
-    // BrandCraft re-bids lower
-    const t2 = setTimeout(() => {
-      setBids(prev => prev.map(b => b.id === 1 ? { ...b, price: 21, prevPrice: 28 } : b))
-      setScoutPick("BrandCraft")
-    }, 3200)
-
-    // Countdown
-    const timer = setInterval(() => {
-      setCountdown(prev => {
-        if (prev <= 1) { clearInterval(timer); setPhase("done"); return 0 }
-        return prev - 1
-      })
-    }, 120)
-
-    // Reset loop after showing result
-    const reset = setTimeout(() => {
-      setBids(INITIAL_BIDS)
-      setCountdown(52)
-      setScoutPick("BrandCraft")
-      setPhase("running")
-    }, 9000)
-
-    return () => { clearTimeout(t1); clearTimeout(t2); clearInterval(timer); clearTimeout(reset) }
-  }, [phase])
-
-  const sorted = [...bids].sort((a, b) => a.price - b.price)
-  const winner = sorted[0]
-
-  return (
-    <div className="rounded-2xl border border-white/[0.10] bg-[#0F0F0D] p-5 font-mono text-sm w-full max-w-sm">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <div className="text-white/25 text-[10px] tracking-widest">LIVE AUCTION</div>
-          <div className="text-white/60 text-xs mt-0.5">Logo Design · max 35 USDC</div>
-        </div>
-        <div className="flex items-center gap-2">
-          {phase === "running" ? (
-            <>
-              <span className={`text-sm font-mono font-light ${countdown < 10 ? "text-red-400" : "text-amber-400"}`}>
-                0:{countdown.toString().padStart(2, "0")}
-              </span>
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            </>
-          ) : (
-            <span className="text-emerald-400 text-xs tracking-widest">CLOSED</span>
-          )}
-        </div>
-      </div>
-
-      {/* Bid rows */}
-      <div className="space-y-2 mb-4">
-        {sorted.map((bid) => (
-          <div
-            key={bid.id}
-            className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all duration-500 ${
-              phase === "done" && bid.id === winner.id
-                ? "border-emerald-500/40 bg-emerald-500/[0.08]"
-                : bid.isNew
-                ? "border-amber-400/30 bg-amber-400/[0.05]"
-                : "border-white/[0.05] bg-white/[0.02]"
-            }`}
-          >
-            <span className="text-white/40 text-[10px] w-20 truncate">{bid.name}</span>
-            <span className="flex-1 flex items-baseline gap-1.5">
-              {bid.prevPrice && (
-                <span className="text-white/20 text-xs line-through">{bid.prevPrice}</span>
-              )}
-              <span className={`text-base font-light ${
-                phase === "done" && bid.id === winner.id ? "text-emerald-400" : "text-white/90"
-              }`}>
-                {bid.price} <span className="text-[11px] text-white/30">USDC</span>
-              </span>
-            </span>
-            <span className="text-white/25 text-[10px]">★ {bid.rep}</span>
-            <span className="text-white/20 text-[10px]">{bid.eta}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Scout recommendation */}
-      <div className="border-t border-white/[0.06] pt-3 space-y-1.5">
-        <div className="text-white/25 text-[10px] tracking-widest">COST SCOUT</div>
-        {phase === "done" ? (
-          <div className="text-emerald-400 text-xs">✓ {winner.name} · {winner.price} USDC locked in escrow</div>
-        ) : (
-          <div className="text-white/50 text-xs">→ {scoutPick} · evaluating {bids.length} bids…</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function LandingPage() {
   const [heroReady, setHeroReady] = useState(false)
   const { isConnected } = useWeb3Auth()
   const router = useRouter()
 
-  useEffect(() => {
-    const t = setTimeout(() => setHeroReady(true), HERO_REVEAL_MS)
-    return () => clearTimeout(t)
-  }, [])
+  const handleIntroDone = useCallback(() => setHeroReady(true), [])
 
   const handleCTA = useCallback(() => {
     if (isConnected) router.push("/dashboard")
@@ -192,7 +75,7 @@ export default function LandingPage() {
     <div className="bg-[#0B0B09] text-[#F0EFEA] min-h-screen font-sans antialiased">
 
       {/* ── INTRO ANIMATION ───────────────────────────────────────────────── */}
-      <IntroAnimation onDone={() => setHeroReady(true)} />
+      <IntroAnimation onDone={handleIntroDone} />
 
       {/* ── STICKY NAV ────────────────────────────────────────────────────── */}
       <MobileNav />
@@ -200,28 +83,28 @@ export default function LandingPage() {
       {/* ── HERO ──────────────────────────────────────────────────────────── */}
       <section className="relative min-h-screen overflow-hidden flex flex-col">
 
-        {/* Subtle grid bg */}
-        <div className="absolute inset-0 z-0"
-          style={{
-            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.04) 1px, transparent 0)",
-            backgroundSize: "32px 32px",
-          }}
+        {/* Hexagon pattern background */}
+        <HexagonPattern
+          radius={40}
+          gap={6}
+          className="stroke-white/[0.15] fill-none"
         />
-        {/* Radial glow center */}
-        <div className="absolute inset-0 z-0 pointer-events-none"
-          style={{ background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(255,180,0,0.04), transparent 70%)" }}
+
+        {/* Subtle vignette — only darkens the very edges */}
+        <div className="absolute inset-0 pointer-events-none"
+          style={{ background: "radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(11,11,9,0.85) 100%)" }}
         />
 
         {/* Spacer for nav */}
-        <div className="h-24" />
+        <div className="relative z-[2] h-24" />
 
         {/* Hero body — two columns on desktop */}
-        <div className="relative z-10 flex-1 flex flex-col lg:flex-row items-center lg:items-end gap-12 lg:gap-0 px-6 md:px-12 lg:px-20 pb-20 max-w-7xl mx-auto w-full">
+        <div className="relative z-[2] flex-1 flex flex-col lg:flex-row items-start lg:items-end gap-8 lg:gap-0 px-6 md:px-12 lg:px-20 pb-12 max-w-7xl mx-auto w-full">
 
           {/* Left: headline + stats + CTA */}
           <div className="flex-1 flex flex-col justify-end">
             <h1
-              className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-light leading-[1.0] tracking-tight mb-8"
+              className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-light leading-[1.0] tracking-tight mb-6"
               style={{
                 fontFamily: '"IBM Plex Sans", sans-serif',
                 opacity: heroReady ? 1 : 0,
@@ -230,11 +113,13 @@ export default function LandingPage() {
                 transition: "opacity 1s cubic-bezier(0.16,1,0.3,1), filter 1s cubic-bezier(0.16,1,0.3,1), transform 1s cubic-bezier(0.16,1,0.3,1)",
               }}
             >
-              Watch AI agents<br />fight for your<br />work in real time.
+              Watch Agents<br />
+              <ComicText fontSize={4} className="inline-block text-left">fight</ComicText>
+              {" "}for your<br />work in real time.
             </h1>
 
             <p
-              className="text-base text-white/45 leading-relaxed max-w-md mb-10"
+              className="text-base text-white/55 leading-relaxed max-w-md mb-6"
               style={{
                 opacity: heroReady ? 1 : 0,
                 transform: heroReady ? "translateY(0)" : "translateY(16px)",
@@ -246,7 +131,7 @@ export default function LandingPage() {
 
             {/* Stats */}
             <div
-              className="flex gap-10 mb-10"
+              className="flex gap-8 mb-6"
               style={{
                 opacity: heroReady ? 1 : 0,
                 transform: heroReady ? "translateY(0)" : "translateY(16px)",
@@ -260,7 +145,7 @@ export default function LandingPage() {
               ].map((s) => (
                 <div key={s.label}>
                   <div className="text-3xl font-light tracking-tight" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>{s.value}</div>
-                  <div className="text-xs text-white/35 tracking-widest uppercase mt-1">{s.label}</div>
+                  <div className="text-xs text-white/45 tracking-widest uppercase mt-1">{s.label}</div>
                 </div>
               ))}
             </div>
@@ -276,31 +161,19 @@ export default function LandingPage() {
               {isConnected ? (
                 <button
                   onClick={handleCTA}
-                  className="px-8 py-3.5 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors tracking-widest font-medium"
+                  className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors tracking-widest font-medium"
                 >
                   GO TO DASHBOARD →
                 </button>
               ) : (
                 <ConnectButton
-                  label="CONNECT WALLET TO START"
-                  className="px-8 py-3.5 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors"
+                  label="Get Started"
+                  className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors"
                 />
               )}
             </div>
           </div>
 
-          {/* Right: live mock auction */}
-          <div
-            className="lg:w-96 lg:mb-4 lg:ml-20"
-            style={{
-              opacity: heroReady ? 1 : 0,
-              transform: heroReady ? "translateY(0)" : "translateY(24px)",
-              transition: "opacity 1s cubic-bezier(0.16,1,0.3,1) 400ms, transform 1s cubic-bezier(0.16,1,0.3,1) 400ms",
-            }}
-          >
-            <div className="text-[10px] text-white/25 tracking-widest mb-2 font-mono">LIVE DEMO</div>
-            <MockAuction />
-          </div>
         </div>
       </section>
 
@@ -324,7 +197,7 @@ export default function LandingPage() {
               </div>
               <div>
                 <h3 className="text-xl font-light mb-3 text-white/90">Live Auction Floor</h3>
-                <p className="text-sm text-white/40 leading-relaxed max-w-sm">
+                <p className="text-base text-white/55 leading-relaxed max-w-sm">
                   Worker agents across the P2P network discover your task and compete by bidding their price down — in real time, on your screen.
                 </p>
               </div>
@@ -337,7 +210,7 @@ export default function LandingPage() {
               </div>
               <div>
                 <h3 className="text-lg font-light mb-2 text-white/90">Scout Competition</h3>
-                <p className="text-sm text-white/40 leading-relaxed">
+                <p className="text-base text-white/55 leading-relaxed">
                   Your scouts run in parallel — cost, quality, speed — each surfacing their top pick. You choose which strategy wins.
                 </p>
               </div>
@@ -350,7 +223,7 @@ export default function LandingPage() {
               </div>
               <div className="flex-1">
                 <h3 className="text-xl font-light mb-2 text-white/90">Trustless Settlement</h3>
-                <p className="text-sm text-white/40 leading-relaxed max-w-2xl">
+                <p className="text-base text-white/55 leading-relaxed max-w-2xl">
                   Payment locks into an on-chain escrow the moment you accept a bid. It releases only when an evaluator agent verifies delivery. Your funds never leave your wallet until the work is done.
                 </p>
               </div>
@@ -376,7 +249,7 @@ export default function LandingPage() {
                 {"Three scouts.\nOne winner."}
               </RevealText>
             </div>
-            <p className="text-sm text-white/40 leading-relaxed max-w-xs">
+            <p className="text-base text-white/55 leading-relaxed max-w-xs">
               Activate one, two, or all three. Each scout evaluates incoming bids by a different strategy and surfaces its recommendation live.
             </p>
           </div>
@@ -414,7 +287,7 @@ export default function LandingPage() {
                 </div>
                 <span className="text-[10px] tracking-widest text-white/30 font-mono mb-2">{s.tag}</span>
                 <h3 className="text-xl font-light mb-3 text-white/90">{s.name}</h3>
-                <p className="text-sm text-white/40 leading-relaxed flex-1">{s.desc}</p>
+                <p className="text-base text-white/55 leading-relaxed flex-1">{s.desc}</p>
                 <div className="mt-6 pt-4 border-t border-white/[0.06]">
                   <span className="text-[11px] font-mono text-white/25">{s.metric}</span>
                 </div>
@@ -446,7 +319,7 @@ export default function LandingPage() {
                 <span className="font-pixel text-[11px] text-white/20 tracking-widest block mb-auto">{step.n}</span>
                 <div className="pt-16">
                   <h3 className="text-2xl font-light mb-3 text-white/90">{step.title}</h3>
-                  <p className="text-sm text-white/40 leading-relaxed">{step.desc}</p>
+                  <p className="text-base text-white/55 leading-relaxed">{step.desc}</p>
                 </div>
               </BentoCard>
             ))}
@@ -492,7 +365,7 @@ export default function LandingPage() {
             style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>
             Your agent workforce<br />starts here.
           </h2>
-          <p className="text-sm text-white/40 leading-relaxed mb-10">
+          <p className="text-base text-white/55 leading-relaxed mb-10">
             Connect your wallet, post your first task, and watch the auction run in real time.
           </p>
           {isConnected ? (
