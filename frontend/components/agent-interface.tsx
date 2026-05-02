@@ -318,7 +318,7 @@ function HeatCell({ level, animDelay }: { level: number; animDelay: number }) {
 }
 
 // Animated typing cursor in review
-function ReviewLine({ item, delay }: { item: typeof REVIEW_LINES[0]; delay: number }) {
+function ReviewLine({ item, delay }: { item: typeof ALL_REVIEW_LINES[0]; delay: number }) {
   const [visible, setVisible] = useState(false)
   useEffect(() => { const t = setTimeout(() => setVisible(true), delay); return () => clearTimeout(t) }, [delay])
 

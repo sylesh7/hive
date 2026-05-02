@@ -70,9 +70,31 @@ class AXLClient:
         return self._peer_id
 
     async def list_peers(self) -> list[dict]:
-        """Return all known peers in the mesh."""
+        """Return all known peers in the mesh (may have duplicates for inbound+outbound)."""
         topology = await self.get_topology()
         return topology.get("peers", [])
+
+    async def list_peer_ids(self) -> list[str]:
+        """Return unique peer IDs from the mesh tree, excluding self."""
+        topology = await self.get_topology()
+        self_id = topology.get("our_public_key", "")
+        # tree has one entry per unique peer node
+        tree = topology.get("tree", [])
+        seen = set()
+        peer_ids = []
+        for node in tree:
+            pid = node.get("public_key", "")
+            if pid and pid != self_id and pid not in seen:
+                seen.add(pid)
+                peer_ids.append(pid)
+        # Fallback to peers list if tree empty
+        if not peer_ids:
+            for p in topology.get("peers", []):
+                pid = p.get("public_key", p.get("key", p.get("id", "")))
+                if pid and pid != self_id and pid not in seen:
+                    seen.add(pid)
+                    peer_ids.append(pid)
+        return peer_ids
 
     # ── Send ──────────────────────────────────────────────────────────────────
 

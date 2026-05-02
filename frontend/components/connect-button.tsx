@@ -24,12 +24,22 @@ export function ConnectButton({ className = "", label = "CONNECT WALLET" }: Conn
     router.push(onboarded ? "/dashboard" : "/onboarding")
   }, [status, router])
 
-  const handleConnect = () => {
-    if (isConnected) {
-      web3Auth?.logout()
-    } else {
-      userInitiated.current = true
-      web3Auth?.connect()
+  const handleConnect = async () => {
+    try {
+      if (isConnected) {
+        await web3Auth?.logout()
+      } else {
+        userInitiated.current = true
+        await web3Auth?.connect()
+      }
+    } catch (e: unknown) {
+      // RPC / MetaMask errors are plain objects — swallow them so they don't
+      // surface as React unhandled rejections pointing at the parent <nav>
+      const msg = (e as { message?: string })?.message ?? String(e)
+      if (!msg.toLowerCase().includes("user rejected") && !msg.toLowerCase().includes("cancelled")) {
+        console.warn("[ConnectButton] connect error:", e)
+      }
+      userInitiated.current = false
     }
   }
 

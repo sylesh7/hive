@@ -310,12 +310,19 @@ async def main():
             for p in axl_procs + agent_procs
         ]
 
-        # Monitor process health
+        # Monitor process health — auto-restart dead agents
         while True:
             await asyncio.sleep(5)
-            dead = [p.name for p in agent_procs if not p.is_alive()]
-            if dead:
-                logger.warning(f"Agent(s) died: {dead}")
+            dead_procs = [p for p in agent_procs if not p.is_alive()]
+            if dead_procs:
+                dead_names = [p.name for p in dead_procs]
+                logger.warning(f"Agent(s) died: {dead_names} — restarting in 4s…")
+                # Wait for Windows to release ports (avoids Errno 10048)
+                await asyncio.sleep(4)
+                for p in dead_procs:
+                    logger.info(f"Restarting agent: {p.name}")
+                    p.start()
+                    asyncio.create_task(p.stream_output())
 
     except KeyboardInterrupt:
         print("\n\n[stop] Shutting down HiveBid...")

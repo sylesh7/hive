@@ -141,6 +141,10 @@ class AuctionManager:
     def is_closed(self) -> bool:
         return self._closed
 
+    @property
+    def is_open(self) -> bool:
+        return not self._closed and self._start_time > 0
+
     def status(self) -> dict:
         return {
             "task_id":         self.task_id,

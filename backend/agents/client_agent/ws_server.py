@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Awaitable
+from typing import Callable, Awaitable
 
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -73,40 +73,96 @@ class WSServer:
 
     async def start_ws(self):
         logger.info(f"[WS] server starting on ws://localhost:{self.ws_port}")
-        async with websockets.serve(self._ws_handler, "0.0.0.0", self.ws_port):
-            await asyncio.Future()   # run forever
+        import socket, asyncio as _a
+        for attempt in range(8):
+            try:
+                async with websockets.serve(
+                    self._ws_handler,
+                    "0.0.0.0",
+                    self.ws_port,
+                    reuse_address=True,
+                ):
+                    logger.info(f"[WS] server listening on ws://localhost:{self.ws_port}")
+                    await _a.Future()   # run forever
+                return
+            except OSError as e:
+                if attempt < 7:
+                    logger.warning(f"[WS] port {self.ws_port} busy (attempt {attempt+1}/8) — retrying in 2s…")
+                    await _a.sleep(2)
+                else:
+                    raise RuntimeError(f"[WS] Could not bind port {self.ws_port} after 8 attempts: {e}") from e
 
     # ── REST API ──────────────────────────────────────────────────────────────
+
+    def _cors(self, response: web.Response) -> web.Response:
+        response.headers["Access-Control-Allow-Origin"]  = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
+
+    async def _options(self, request: web.Request) -> web.Response:
+        return self._cors(web.Response(status=204))
+
+    async def _health(self, request: web.Request) -> web.Response:
+        return self._cors(web.json_response({"status": "ok"}))
 
     async def _rest_handler(self, request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
             body = {}
-        cmd = {"action": request.match_info.get("action", ""), **body}
+
+        # Derive action from path and path params
+        task_id = request.match_info.get("task_id", "")
+        path    = request.path
+
+        if path == "/tasks":
+            action = "GET_TASKS"
+        elif path == "/task" or path == "/task/":
+            action = "CREATE_TASK"
+        elif task_id and path.endswith("/accept"):
+            action = "ACCEPT_BID"
+        elif task_id and path.endswith("/cancel"):
+            action = "CANCEL_AUCTION"
+        elif task_id:
+            action = "GET_TASK"
+        else:
+            action = body.get("action", "")
+
+        cmd = {"action": action, "task_id": task_id, **body}
         if self.command_handler:
             result = await self.command_handler(cmd)
         else:
             result = {"error": "no handler"}
-        return web.json_response(result)
 
-    async def _health(self, request: web.Request) -> web.Response:
-        return web.json_response({"status": "ok"})
+        return self._cors(web.json_response(result))
 
     async def start_rest(self):
         app = web.Application()
-        app.router.add_get("/health", self._health)
-        app.router.add_post("/task", self._rest_handler)
-        app.router.add_post("/task/{task_id}/accept", self._rest_handler)
-        app.router.add_post("/task/{task_id}/cancel", self._rest_handler)
-        app.router.add_get("/tasks", self._rest_handler)
-        app.router.add_get("/task/{task_id}", self._rest_handler)
+        # CORS preflight for all routes
+        app.router.add_route("OPTIONS", "/{tail:.*}",        self._options)
+        app.router.add_get("/health",                         self._health)
+        app.router.add_post("/task",                          self._rest_handler)
+        app.router.add_get("/tasks",                          self._rest_handler)
+        app.router.add_get("/task/{task_id}",                 self._rest_handler)
+        app.router.add_post("/task/{task_id}/accept",         self._rest_handler)
+        app.router.add_post("/task/{task_id}/cancel",         self._rest_handler)
 
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", self.rest_port)
-        await site.start()
-        logger.info(f"[REST] server started on http://localhost:{self.rest_port}")
+
+        for attempt in range(8):
+            try:
+                site = web.TCPSite(runner, "0.0.0.0", self.rest_port, reuse_address=True)
+                await site.start()
+                logger.info(f"[REST] server started on http://localhost:{self.rest_port}")
+                return
+            except OSError as e:
+                if attempt < 7:
+                    logger.warning(f"[REST] port {self.rest_port} busy (attempt {attempt+1}/8) — retrying in 2s…")
+                    await asyncio.sleep(2)
+                else:
+                    raise RuntimeError(f"[REST] Could not bind port {self.rest_port} after 8 attempts: {e}") from e
 
     async def start(self):
         await asyncio.gather(self.start_ws(), self.start_rest())

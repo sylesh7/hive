@@ -104,7 +104,46 @@ class BaseWorker(ABC):
             await self.axl.wait_ready()
             self._self_peer_id = await self.axl.get_self_peer_id()
             logger.info(f"[{self.agent_name}] ready — {self.worker_name} @ peer={self._self_peer_id[:8]}…")
+
+            # ── Announce ourselves to the client agent ──────────────────────────
+            # The client needs to map agent_name → peer_id to build its PEER_REGISTRY.
+            # Retry a few times in case the client hasn't started yet.
+            await self._announce_hello()
+
             await self.axl.recv_loop(self._on_message, stop_event=self._stop)
+
+    async def _announce_hello(self):
+        """Send HELLO to client so it can register our peer_id in PEER_REGISTRY."""
+        from agents.shared.config import AXL_PORTS
+        import httpx as _httpx
+
+        client_api = f"http://127.0.0.1:{AXL_PORTS['client']['api_port']}"
+        hello = {
+            "type":       "HELLO",
+            "agent_name": self.agent_name,
+            "worker_name": self.worker_name,
+            "peer_id":    self._self_peer_id,
+            "capabilities": self.capabilities,
+            "wallet_address": self.wallet_address,
+        }
+
+        # Get client's peer_id from its AXL topology
+        for attempt in range(10):
+            try:
+                async with _httpx.AsyncClient(timeout=3.0) as http:
+                    resp = await http.get(f"{client_api}/topology")
+                    if resp.status_code == 200:
+                        client_peer_id = resp.json().get("our_public_key", "")
+                        if client_peer_id:
+                            await self.axl.send(client_peer_id, hello)
+                            logger.info(f"[{self.agent_name}] HELLO sent to client ({client_peer_id[:8]}…)")
+                            return
+            except Exception as e:
+                logger.debug(f"[{self.agent_name}] HELLO attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(2)
+
+        logger.warning(f"[{self.agent_name}] could not send HELLO to client after 10 attempts")
+
 
     # ── Message routing ───────────────────────────────────────────────────────
 

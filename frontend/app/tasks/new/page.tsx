@@ -3,6 +3,15 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { PageShell } from "@/components/page-shell"
+import { useWeb3Auth } from "@/context/web3auth"
+import { backend } from "@/lib/backend"
+
+const TASK_TYPES = [
+  { id: "code_audit",     label: "Code Audit",      desc: "Smart contract or code security review" },
+  { id: "logo_design",    label: "Logo Design",      desc: "Brand identity and visual design" },
+  { id: "research",       label: "Research Report",  desc: "Market research, analysis, or summaries" },
+  { id: "general",        label: "General Task",     desc: "Writing, data, or anything else" },
+]
 
 const SCOUTS = [
   { id: "cost",    name: "Cost Scout",    tag: "CHEAPEST",        desc: "Picks the lowest bid that meets your deliverable spec." },
@@ -11,56 +20,57 @@ const SCOUTS = [
 ]
 
 const DURATIONS = [
-  { label: "30 min",   value: "30m" },
-  { label: "1 hour",   value: "1h" },
-  { label: "4 hours",  value: "4h" },
-  { label: "24 hours", value: "24h" },
-  { label: "72 hours", value: "72h" },
+  { label: "10 min", value: "10m",  secs: 600    },
+  { label: "30 min", value: "30m",  secs: 1800   },
+  { label: "1 hour", value: "1h",   secs: 3600   },
+  { label: "4 hours",value: "4h",   secs: 14400  },
+  { label: "24 hrs", value: "24h",  secs: 86400  },
+  { label: "72 hrs", value: "72h",  secs: 259200 },
 ]
 
-function DelegationModal({ budget, duration, onConfirm, onCancel }: {
-  budget: string; duration: string; onConfirm: () => void; onCancel: () => void
+function DelegationModal({ budget, duration, onConfirm, onCancel, submitting, signing, error }: {
+  budget: string; duration: string
+  onConfirm: () => void; onCancel: () => void
+  submitting: boolean; signing: boolean; error: string
 }) {
-  const [signing, setSigning] = useState(false)
-  const durLabel = DURATIONS.find(d => d.value === duration)?.label ?? duration
-
-  const handleSign = async () => {
-    setSigning(true)
-    await new Promise(r => setTimeout(r, 2000))
-    onConfirm()
-  }
-
+  const durLabel = DURATIONS.find(d=>d.value===duration)?.label ?? duration
+  const btnLabel = !submitting ? "SIGN & POST →"
+    : signing ? "WAITING FOR METAMASK…"
+    : "POSTING TO NETWORK…"
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={!submitting ? onCancel : undefined} />
       <div className="relative z-10 w-full max-w-md rounded-2xl border border-white/[0.15] bg-[#111110] p-8 flex flex-col gap-5 shadow-2xl">
         <div>
-          <div className="text-[10px] font-mono text-white/40 tracking-widest mb-1">EIP-7702 DELEGATION</div>
-          <h2 className="text-xl font-light" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>Confirm spending permission</h2>
+          <div className="text-[10px] font-mono text-white/40 tracking-widest mb-1">EIP-712 SPENDING PERMISSION</div>
+          <h2 className="text-xl font-light" style={{ fontFamily:'"IBM Plex Sans", sans-serif' }}>Confirm spending permission</h2>
         </div>
         <div className="rounded-xl border border-white/[0.10] bg-[#0f0f0d] p-4 space-y-2.5">
           {[
-            { label: "Permitted amount", value: `${budget} USDC` },
-            { label: "Contract",         value: "HiveBidEscrow (verified)" },
-            { label: "Time limit",       value: `${durLabel} + 1h buffer` },
-            { label: "Revokable",        value: "Yes — from dashboard" },
-            { label: "Standard",         value: "EIP-7702" },
-          ].map(row => (
+            { label:"Permitted amount", value:`${budget} USDC` },
+            { label:"Contract",         value:"HiveBidEscrow (verified)" },
+            { label:"Time limit",       value:`${durLabel} + 1h buffer` },
+            { label:"Revokable",        value:"Yes — from dashboard" },
+            { label:"Standard",         value:"EIP-712 + EIP-7702" },
+          ].map(row=>(
             <div key={row.label} className="flex justify-between text-xs font-mono">
               <span className="text-white/40">{row.label}</span>
               <span className="text-white/80">{row.value}</span>
             </div>
           ))}
         </div>
-        <p className="text-xs text-white/50 leading-relaxed">
-          One-time scoped permission for {budget} USDC — escrow contract only, this task only. No other funds accessible.
-        </p>
+        {signing && (
+          <div className="flex items-center gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <div className="w-3.5 h-3.5 rounded-full border-2 border-amber-400/40 border-t-amber-400 animate-spin shrink-0" />
+            <p className="text-[11px] font-mono text-amber-300/80">Check MetaMask to sign the spending permission…</p>
+          </div>
+        )}
+        {error && <p className="text-xs text-red-400 font-mono">{error}</p>}
+        <p className="text-xs text-white/50 leading-relaxed">One-time scoped permission for {budget} USDC — escrow contract only, this task only.</p>
         <div className="flex gap-3 pt-1">
-          <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-white/[0.15] text-xs font-mono text-white/60 hover:text-white/80 hover:border-white/25 transition-all tracking-widest">
-            CANCEL
-          </button>
-          <button onClick={handleSign} disabled={signing} className="flex-1 py-2.5 rounded-xl bg-white text-[#0B0B09] text-xs font-mono font-medium tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50">
-            {signing ? "SIGNING…" : "SIGN & POST →"}
+          <button onClick={onCancel} disabled={submitting} className="flex-1 py-2.5 rounded-xl border border-white/[0.15] text-xs font-mono text-white/60 hover:text-white/80 hover:border-white/25 transition-all tracking-widest disabled:opacity-40">CANCEL</button>
+          <button onClick={onConfirm} disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-white text-[#0B0B09] text-xs font-mono font-medium tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50">
+            {btnLabel}
           </button>
         </div>
       </div>
@@ -70,26 +80,131 @@ function DelegationModal({ budget, duration, onConfirm, onCancel }: {
 
 export default function NewTask() {
   const router = useRouter()
+  const { web3Auth, isConnected, address } = useWeb3Auth()
   const [title, setTitle]       = useState("")
   const [spec, setSpec]         = useState("")
   const [budget, setBudget]     = useState("50")
   const [duration, setDuration] = useState("1h")
+  const [taskType, setTaskType] = useState("general")
   const [scouts, setScouts]     = useState<string[]>(["cost"])
   const [showModal, setShowModal] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [signing, setSigning]   = useState(false)
+  const [error, setError]       = useState("")
 
   const toggleScout = (id: string) => {
-    setScouts(prev => prev.includes(id) ? (prev.length > 1 ? prev.filter(s => s !== id) : prev) : [...prev, id])
+    setScouts(prev => prev.includes(id) ? (prev.length > 1 ? prev.filter(s=>s!==id) : prev) : [...prev, id])
   }
 
   const canPost = title.trim().length > 0 && spec.trim().length > 10 && Number(budget) > 0
-  const durLabel = DURATIONS.find(d => d.value === duration)?.label ?? duration
+
+  const handlePost = async () => {
+    setSubmitting(true)
+    setSigning(true)
+    setError("")
+    try {
+      // ── Step 1: Request MetaMask EIP-712 signing ─────────────────────────
+      // This triggers the MetaMask popup for the user to sign the delegation.
+      const provider = web3Auth?.provider
+      if (provider) {
+        const domain = {
+          name: "HiveBid Escrow",
+          version: "1",
+          chainId: 84532,   // Base Sepolia
+          verifyingContract: "0x0000000000000000000000000000000000000000",
+        }
+        const types = {
+          SpendingPermission: [
+            { name: "spender",    type: "address" },
+            { name: "token",      type: "address" },
+            { name: "allowance",  type: "uint160" },
+            { name: "period",     type: "uint48"  },
+            { name: "start",      type: "uint48"  },
+            { name: "salt",       type: "bytes32" },
+          ],
+        }
+        const message = {
+          spender:   "0x000000000000000000000000000000000000dEaD",
+          token:     "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // USDC Base Sepolia
+          allowance: Math.round(Number(budget) * 1e6).toString(),
+          period:    (DURATIONS.find(d=>d.value===duration)?.secs ?? 3600).toString(),
+          start:     Math.floor(Date.now() / 1000).toString(),
+          salt:      "0x" + Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b=>b.toString(16).padStart(2,"0")).join(""),
+        }
+        const from = address ?? (await provider.request({ method: "eth_accounts" }) as string[])?.[0]
+        await provider.request({
+          method: "eth_signTypedData_v4",
+          params: [from, JSON.stringify({ domain, types, primaryType: "SpendingPermission", message })],
+        })
+      } else {
+        // Wallet not connected — warn but allow posting (dev mode)
+        console.warn("[HiveBid] No wallet connected — posting without signature")
+      }
+      setSigning(false)
+
+      // ── Step 2: Post task to backend ─────────────────────────────────────
+      const dur = DURATIONS.find(d=>d.value===duration)
+      const result = await backend.postTask({
+        title,
+        description: spec,
+        task_type:   taskType,
+        max_budget_usdc:       Number(budget),
+        auction_window_secs:   dur?.secs ?? 3600,
+        required_capabilities: scouts,
+        deliverable_spec: { description: spec, format: "text", min_length: 100 },
+      })
+      const taskId: string = result?.task_id ?? result?.id ?? ""
+      router.push(taskId ? `/tasks/${taskId}/auction` : "/dashboard")
+    } catch (e: unknown) {
+      setSigning(false)
+      // MetaMask RPC errors come as plain objects {code, message}, not Error instances
+      const rpcErr = e as { code?: number; message?: string } | null
+      const err = rpcErr?.message ?? (e instanceof Error ? e.message : String(e))
+      const lower = err.toLowerCase()
+
+      if (rpcErr?.code === 4001 || lower.includes("user rejected") || lower.includes("denied") || lower.includes("cancelled")) {
+        // User clicked Reject in MetaMask — keep modal open, show friendly message
+        setError("Signature rejected — please approve in MetaMask to post the task.")
+        setSubmitting(false)
+      } else if (lower.includes("eth_signtypeddata") || lower.includes("not supported") || lower.includes("does not support")) {
+        // Provider doesn't support eth_signTypedData_v4 (e.g. Web3Auth social login)
+        // Fall through and post anyway without signature
+        setSigning(false)
+        try {
+          const dur = DURATIONS.find(d=>d.value===duration)
+          const result = await backend.postTask({
+            title, description: spec, task_type: taskType,
+            max_budget_usdc: Number(budget),
+            auction_window_secs: dur?.secs ?? 3600,
+            required_capabilities: scouts,
+            deliverable_spec: { description: spec, format: "text", min_length: 100 },
+          })
+          const taskId: string = result?.task_id ?? result?.id ?? ""
+          router.push(taskId ? `/tasks/${taskId}/auction` : "/dashboard")
+          return
+        } catch (postErr: unknown) {
+          const postMsg = (postErr as { message?: string })?.message ?? String(postErr)
+          setError(`Failed to post: ${postMsg}`)
+          setSubmitting(false)
+        }
+      } else {
+        setError(`Failed: ${err}`)
+        setSubmitting(false)
+      }
+    }
+  }
+
+  const durLabel = DURATIONS.find(d=>d.value===duration)?.label ?? duration
 
   return (
     <PageShell>
       {showModal && (
         <DelegationModal budget={budget} duration={duration}
-          onConfirm={() => { setShowModal(false); router.push("/dashboard") }}
-          onCancel={() => setShowModal(false)} />
+          onConfirm={handlePost}
+          onCancel={() => { if (!submitting) { setShowModal(false); setError("") } }}
+          submitting={submitting}
+          signing={signing}
+          error={error} />
       )}
 
       <div className="max-w-5xl mx-auto px-6 md:px-10 pt-24 pb-20">

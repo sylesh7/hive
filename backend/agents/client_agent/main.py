@@ -154,8 +154,39 @@ class ClientAgent:
             await self._handle_delivery(raw)
         elif msg_type == "EVALUATION_VERDICT":
             await self._handle_verdict(raw)
+        elif msg_type == "HELLO":
+            await self._handle_hello(sender_peer_id, raw)
         else:
             logger.debug(f"Unhandled message type: {msg_type}")
+
+    # ── HELLO / peer registration ─────────────────────────────────────────────
+
+    async def _handle_hello(self, sender_peer_id: str, raw: dict):
+        """A worker just announced its peer_id. Register it and replay open auctions."""
+        agent_name  = raw.get("agent_name", "")
+        worker_name = raw.get("worker_name", "")
+        if agent_name and sender_peer_id:
+            PEER_REGISTRY[agent_name] = sender_peer_id
+            logger.info(f"HELLO from {worker_name} ({agent_name}) peer={sender_peer_id[:8]}…")
+            await self._ws.broadcast("PEER_REGISTERED", {
+                "agent_name": agent_name,
+                "worker_name": worker_name,
+                "peer_id": sender_peer_id,
+            })
+
+        # Re-broadcast any open auctions so late-starting workers can still bid
+        for task_id, auction in self._auctions.items():
+            if auction.is_open:
+                rec = self.task_mgr.get(task_id)
+                if rec:
+                    announcement = {
+                        "type": "TASK_ANNOUNCEMENT",
+                        **rec.spec,
+                        "task_id": task_id,
+                        "client_peer_id": self._self_peer_id,
+                    }
+                    await self.axl.send(sender_peer_id, announcement)
+                    logger.info(f"Replayed task {task_id[:8]}… to late worker {agent_name}")
 
     # ── Task creation ─────────────────────────────────────────────────────────
 
@@ -194,10 +225,29 @@ class ClientAgent:
             auction_end=end_time,
         )
 
-        # Broadcast to all worker peers
-        worker_peer_ids = [PEER_REGISTRY[n] for n in WORKER_NAMES if n in PEER_REGISTRY]
-        sent = await self.axl.broadcast(worker_peer_ids, announcement.to_dict())
-        logger.info(f"Task {task_id} broadcast to {sent}/{len(worker_peer_ids)} workers")
+        # ── Broadcast to worker peers ──────────────────────────────────────────
+        # Primary: use PEER_REGISTRY (populated by HELLO messages from workers)
+        # Fallback: broadcast to ALL known AXL peers — workers self-filter via should_bid()
+        registered_workers = [PEER_REGISTRY[n] for n in WORKER_NAMES if n in PEER_REGISTRY]
+
+        if len(registered_workers) >= 4:
+            target_peers = registered_workers
+        else:
+            try:
+                target_peers = await self.axl.list_peer_ids()
+                if target_peers:
+                    logger.info(f"PEER_REGISTRY has {len(registered_workers)} workers — broadcasting to all {len(target_peers)} AXL peers")
+                else:
+                    target_peers = registered_workers
+            except Exception as e:
+                target_peers = registered_workers
+                logger.warning(f"Could not fetch AXL peers for broadcast: {e}")
+
+        sent = await self.axl.broadcast(target_peers, announcement.to_dict())
+        logger.info(f"Task {task_id} broadcast to {sent}/{len(target_peers)} peers")
+
+        # Schedule periodic re-broadcast so late-starting workers get the task
+        asyncio.create_task(self._rebrodcast_loop(task_id, announcement.to_dict()))
 
         await self._ws.broadcast("TASK_CREATED", {
             "task": rec.to_dict(),
@@ -206,6 +256,21 @@ class ClientAgent:
         })
 
         return rec.to_dict()
+
+    async def _rebrodcast_loop(self, task_id: str, announcement: dict):
+        """Re-broadcast task announcement every 15s while auction is open."""
+        for _ in range(20):   # max 20 re-broadcasts (5 min at 15s each)
+            await asyncio.sleep(15)
+            auction = self._auctions.get(task_id)
+            if not auction or auction.is_closed():
+                break
+            try:
+                peer_ids = await self.axl.list_peer_ids()
+                if peer_ids:
+                    sent = await self.axl.broadcast(peer_ids, announcement)
+                    logger.debug(f"Re-broadcast task {task_id[:8]}… to {sent}/{len(peer_ids)} peers")
+            except Exception as e:
+                logger.debug(f"Re-broadcast error: {e}")
 
     # ── Bid handling ──────────────────────────────────────────────────────────
 
@@ -232,7 +297,13 @@ class ClientAgent:
             task_spec=rec.spec if rec else {},
         )
         scout_peer_ids = [PEER_REGISTRY[n] for n in SCOUT_NAMES if n in PEER_REGISTRY]
-        await self.axl.broadcast(scout_peer_ids, forward.to_dict())
+        if not scout_peer_ids:
+            try:
+                scout_peer_ids = await self.axl.list_peer_ids()
+            except Exception:
+                pass
+        if scout_peer_ids:
+            await self.axl.broadcast(scout_peer_ids, forward.to_dict())
 
     # ── Scout recommendations ─────────────────────────────────────────────────
 
