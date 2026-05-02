@@ -1,163 +1,195 @@
 "use client"
 
-import { useRouter } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { PageShell } from "@/components/page-shell"
+import { useBackendStore } from "@/context/backend-store"
+import type { TaskRecord } from "@/lib/backend"
 
-const MOCK_TASK = {
-  title: "Research report on Base L2",
-  spec: "Write a 1500-word research report on the Base L2 ecosystem — covering TVL, top protocols, developer activity, and growth trends. Deliver as a markdown file.",
-  status: "settled" as const,
-  finalPrice: "40 USDC",
-  budget: "50 USDC",
-  worker: "ResearchBot",
-  workerAddress: "0xAb3F...9d12",
-  workerReputation: 91,
-  date: "Apr 29, 2025",
-  auctionDuration: "1 hour",
-  deliveryTime: "34 min",
-  scoutsUsed: ["Cost Scout", "Quality Scout"],
-  deliverableHash: "QmXa9f8r2Kv3BpLm4nWsYcT7...",
-  txHash: "0x4f2c...a81b",
-  network: "Base Sepolia",
+function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className="flex justify-between text-xs font-mono py-2.5 border-b border-white/[0.06] last:border-0 gap-4">
+      <span className="text-white/40 shrink-0">{label}</span>
+      <span className={`text-right break-all ${highlight ? "text-emerald-400" : "text-white/75"}`}>{value}</span>
+    </div>
+  )
 }
 
-const AUDIT_TRAIL = [
-  { time: "14:00:00", event: "Task posted",       detail: "Auction opened · budget cap 50 USDC" },
-  { time: "14:00:12", event: "Bid received",       detail: "ResearchBot — 40 USDC · ETA 40 min" },
-  { time: "14:00:31", event: "Bid received",       detail: "DataCrawler — 48 USDC · ETA 25 min" },
-  { time: "14:00:58", event: "Bid received",       detail: "ChainWriter — 38 USDC · ETA 60 min" },
-  { time: "14:01:02", event: "Scout evaluated",    detail: "Cost Scout → ChainWriter · Quality Scout → ResearchBot" },
-  { time: "14:01:15", event: "Bid accepted",       detail: "ResearchBot selected · escrow locked 40 USDC" },
-  { time: "14:35:44", event: "Delivery submitted", detail: "IPFS hash QmXa9... · 1,612 words" },
-  { time: "14:36:02", event: "Evaluator passed",   detail: "Spec match 94% · all criteria met" },
-  { time: "14:36:05", event: "Escrow released",    detail: "40 USDC to ResearchBot · tx 0x4f2c...a81b" },
-  { time: "14:36:06", event: "Reputation updated", detail: "ResearchBot 89 to 91 (+2)" },
-]
-
-function StatusPill({ status }: { status: "settled" | "refunded" | "cancelled" }) {
-  const map = { settled: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", refunded: "bg-white/10 text-white/50 border-white/20", cancelled: "bg-white/10 text-white/40 border-white/15" }
-  const labels = { settled: "SETTLED", refunded: "REFUNDED", cancelled: "CANCELLED" }
-  return <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-mono tracking-widest ${map[status]}`}>{labels[status]}</span>
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    SETTLED:   "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+    REFUNDED:  "bg-white/10 text-white/50 border-white/20",
+    CANCELLED: "bg-white/10 text-white/40 border-white/15",
+    EVALUATING:"bg-purple-500/20 text-purple-300 border-purple-500/40",
+    DELIVERY_PENDING:"bg-blue-500/20 text-blue-300 border-blue-500/40",
+    AUCTION_OPEN:"bg-amber-500/20 text-amber-300 border-amber-500/40",
+  }
+  const labels: Record<string, string> = {
+    SETTLED:"SETTLED", REFUNDED:"REFUNDED", CANCELLED:"CANCELLED",
+    EVALUATING:"EVALUATING", DELIVERY_PENDING:"DELIVERING", AUCTION_OPEN:"LIVE",
+  }
+  return (
+    <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-mono tracking-widest ${map[status] ?? "bg-white/10 text-white/50 border-white/20"}`}>
+      {labels[status] ?? status}
+    </span>
+  )
 }
 
 export default function TaskDetailPage() {
+  const params = useParams<{ id: string }>()
   const router = useRouter()
+  const taskId = params.id
+  const { activeTasks, historyTasks } = useBackendStore()
+  const task: TaskRecord | undefined =
+    activeTasks.find(t => t.task_id === taskId) ??
+    historyTasks.find(t => t.task_id === taskId)
+
+  const isSettled  = task?.state === "SETTLED"
+  const isRefunded = task?.state === "REFUNDED"
+  const delivery   = task?.delivery as Record<string, unknown> | null | undefined
+  const content    = typeof delivery?.deliverable_content === "string" ? delivery.deliverable_content : null
+  const savings    = task?.winning_bid
+    ? Math.max(0, (task.spec.max_budget_usdc ?? 0) - task.winning_bid.bid_price_usdc).toFixed(2)
+    : null
+
+  if (!task) {
+    return (
+      <PageShell>
+        <div className="max-w-4xl mx-auto px-6 pt-24 pb-20 text-center">
+          <p className="text-white/40 text-sm mb-4">Task not found.</p>
+          <button onClick={() => router.push("/dashboard")}
+            className="text-[10px] font-mono text-white/40 hover:text-white/60 tracking-widest transition-colors">
+            ← DASHBOARD
+          </button>
+        </div>
+      </PageShell>
+    )
+  }
 
   return (
     <PageShell>
       <div className="max-w-5xl mx-auto px-6 md:px-10 pt-24 pb-20">
 
+        {/* Header */}
         <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
           <div>
             <div className="text-white/40 text-[10px] font-mono tracking-widest mb-1">TASK DETAIL</div>
-            <h1 className="text-2xl font-light tracking-tight" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>{MOCK_TASK.title}</h1>
-            <div className="text-white/35 text-xs font-mono mt-1">{MOCK_TASK.date}</div>
+            <h1 className="text-2xl font-light tracking-tight" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>
+              {task.spec.title}
+            </h1>
+            <div className="text-white/35 text-xs font-mono mt-1">
+              {task.spec.task_type?.replace(/_/g, " ").toUpperCase()} · {new Date(task.created_at * 1000).toLocaleString()}
+            </div>
           </div>
-          <StatusPill status={MOCK_TASK.status} />
+          <StatusPill status={task.state} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
 
+          {/* Left column */}
           <div className="lg:col-span-7 flex flex-col gap-4">
 
+            {/* Spec */}
             <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-6">
               <div className="text-[10px] font-mono text-white/40 tracking-widest mb-3">DELIVERABLE SPEC</div>
-              <p className="text-sm text-white/70 leading-relaxed">{MOCK_TASK.spec}</p>
+              <p className="text-sm text-white/70 leading-relaxed">{task.spec.description ?? "No description provided."}</p>
             </div>
 
-            <div className="rounded-2xl border border-white/[0.12] bg-[#111110] overflow-hidden">
-              <div className="px-6 pt-5 pb-3 border-b border-white/[0.07]">
-                <div className="text-[10px] font-mono text-white/40 tracking-widest">ON-CHAIN AUDIT TRAIL</div>
-              </div>
-              <div className="divide-y divide-white/[0.05]">
-                {AUDIT_TRAIL.map((entry, i) => (
-                  <div key={i} className="flex gap-4 px-6 py-3.5">
-                    <div className="text-[10px] font-mono text-white/25 w-16 shrink-0 pt-0.5 tabular-nums">{entry.time}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-light text-white/80">{entry.event}</div>
-                      <div className="text-[11px] text-white/40 mt-0.5 leading-snug">{entry.detail}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
-              <div className="text-[10px] font-mono text-white/40 tracking-widest mb-3">DELIVERABLE</div>
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-mono text-white/60 break-all">{MOCK_TASK.deliverableHash}</div>
-                  <div className="text-[10px] font-mono text-white/30 mt-1">IPFS · 1,612 words · markdown</div>
+            {/* Verdict banner */}
+            {(isSettled || isRefunded) && (
+              <div className={`rounded-2xl border p-5 ${isSettled ? "border-emerald-500/30 bg-[#0d1a14]" : "border-white/[0.12] bg-[#111110]"}`}>
+                <div className="text-[10px] font-mono text-white/40 tracking-widest mb-2">EVALUATOR VERDICT</div>
+                <div className={`text-sm font-light mb-1 ${isSettled ? "text-emerald-300" : "text-white/60"}`}>
+                  {isSettled ? "✓ PASS — Delivery met spec requirements" : "✗ FAIL — Delivery did not meet spec requirements"}
                 </div>
-                <button className="shrink-0 px-3 py-2 rounded-lg border border-white/[0.15] text-[10px] font-mono text-white/60 hover:text-white/80 hover:border-white/25 transition-colors tracking-widest">VIEW</button>
+                {task.verdict_reason && (
+                  <p className="text-[11px] text-white/45 leading-relaxed">{task.verdict_reason}</p>
+                )}
               </div>
-            </div>
+            )}
 
+            {/* Deliverable content */}
+            {content && (
+              <div className="rounded-2xl border border-white/[0.12] bg-[#111110] overflow-hidden">
+                <div className="px-5 pt-5 pb-3 border-b border-white/[0.07] flex items-center justify-between">
+                  <div className="text-[10px] font-mono text-white/40 tracking-widest">DELIVERABLE</div>
+                  <span className="text-[9px] font-mono text-white/25">{content.length.toLocaleString()} chars</span>
+                </div>
+                <div className="p-5 max-h-72 overflow-y-auto">
+                  <pre className="text-xs text-white/65 whitespace-pre-wrap font-mono leading-relaxed">
+                    {content.slice(0, 3000)}{content.length > 3000 ? "\n…" : ""}
+                  </pre>
+                </div>
+              </div>
+            )}
+
+            {/* On-chain hashes */}
+            {(task.escrow_tx_hash || task.release_tx_hash || task.refund_tx_hash) && (
+              <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
+                <div className="text-[10px] font-mono text-white/40 tracking-widest mb-3">ON-CHAIN TRANSACTIONS</div>
+                {task.escrow_tx_hash  && <Row label="ESCROW"  value={task.escrow_tx_hash} />}
+                {task.release_tx_hash && <Row label="RELEASE" value={task.release_tx_hash} highlight />}
+                {task.refund_tx_hash  && <Row label="REFUND"  value={task.refund_tx_hash} />}
+              </div>
+            )}
           </div>
 
+          {/* Right column */}
           <div className="lg:col-span-5 flex flex-col gap-4">
 
+            {/* Financials */}
             <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
               <div className="text-[10px] font-mono text-white/40 tracking-widest mb-4">FINANCIALS</div>
-              <div className="space-y-3">
-                {[
-                  { label: "FINAL PRICE", value: MOCK_TASK.finalPrice, highlight: true },
-                  { label: "BUDGET CAP",  value: MOCK_TASK.budget },
-                  { label: "SAVED",       value: "10 USDC" },
-                  { label: "NETWORK",     value: MOCK_TASK.network },
-                ].map(row => (
-                  <div key={row.label} className="flex justify-between text-xs font-mono">
-                    <span className="text-white/35">{row.label}</span>
-                    <span className={row.highlight ? "text-emerald-400" : "text-white/75"}>{row.value}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 pt-3 border-t border-white/[0.07]">
-                <div className="text-[9px] font-mono text-white/30 mb-1">TX HASH</div>
-                <div className="text-[10px] font-mono text-white/50 break-all">{MOCK_TASK.txHash}</div>
-              </div>
+              <Row label="BUDGET CAP"   value={`${task.spec.max_budget_usdc} USDC`} />
+              {task.winning_bid && (
+                <>
+                  <Row label="FINAL PRICE" value={`${task.winning_bid.bid_price_usdc.toFixed(2)} USDC`} highlight />
+                  {savings && Number(savings) > 0 && <Row label="SAVED" value={`${savings} USDC`} />}
+                </>
+              )}
+              <Row label="BIDS RECEIVED" value={String(task.bids?.length ?? 0)} />
+              <Row label="NETWORK"       value="Base Sepolia" />
             </div>
 
-            <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
-              <div className="text-[10px] font-mono text-white/40 tracking-widest mb-4">WORKER</div>
-              <div className="space-y-3 mb-4">
-                {[
-                  { label: "NAME",       value: MOCK_TASK.worker },
-                  { label: "ADDRESS",    value: MOCK_TASK.workerAddress },
-                  { label: "DELIVERY",   value: MOCK_TASK.deliveryTime },
-                ].map(row => (
-                  <div key={row.label} className="flex justify-between text-xs font-mono">
-                    <span className="text-white/35">{row.label}</span>
-                    <span className="text-white/75">{row.value}</span>
+            {/* Worker */}
+            {task.winning_bid && (
+              <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
+                <div className="text-[10px] font-mono text-white/40 tracking-widest mb-4">ASSIGNED WORKER</div>
+                <Row label="NAME"     value={task.winning_bid.worker_name} />
+                <Row label="WALLET"   value={task.winning_bid.worker_wallet || "—"} />
+                <Row label="ETA"      value={task.winning_bid.delivery_time_secs < 3600
+                  ? `${Math.round(task.winning_bid.delivery_time_secs / 60)}m`
+                  : `${(task.winning_bid.delivery_time_secs / 3600).toFixed(1)}h`} />
+                <div className="mt-4 pt-3 border-t border-white/[0.06]">
+                  <div className="flex justify-between text-[9px] font-mono text-white/30 mb-1.5">
+                    <span>REPUTATION</span>
+                    <span>{task.winning_bid.worker_reputation_score}/100</span>
                   </div>
-                ))}
-              </div>
-              <div>
-                <div className="flex justify-between text-[9px] font-mono text-white/30 mb-1.5">
-                  <span>REPUTATION</span><span>{MOCK_TASK.workerReputation}/100</span>
-                </div>
-                <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                  <div className="h-full rounded-full bg-emerald-400/70" style={{ width: `${MOCK_TASK.workerReputation}%` }} />
+                  <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                    <div className="h-full rounded-full bg-emerald-400/60" style={{ width: `${task.winning_bid.worker_reputation_score}%` }} />
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
-            <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-5">
-              <div className="text-[10px] font-mono text-white/40 tracking-widest mb-3">SCOUTS USED</div>
-              <div className="flex flex-wrap gap-2 mb-4">
-                {MOCK_TASK.scoutsUsed.map(s => (
-                  <span key={s} className="px-2.5 py-1 rounded-lg border border-white/[0.12] text-[10px] font-mono text-white/60">{s}</span>
-                ))}
-              </div>
-              <div className="flex gap-4 pt-3 border-t border-white/[0.07]">
-                <div><div className="text-[9px] font-mono text-white/30">AUCTION</div><div className="text-xs font-mono text-white/60 mt-0.5">{MOCK_TASK.auctionDuration}</div></div>
-                <div><div className="text-[9px] font-mono text-white/30">DELIVERY</div><div className="text-xs font-mono text-white/60 mt-0.5">{MOCK_TASK.deliveryTime}</div></div>
-              </div>
+            {/* Navigation */}
+            <div className="flex flex-col gap-2">
+              {(task.state === "AUCTION_OPEN" || task.state === "BROADCASTING") && (
+                <button onClick={() => router.push(`/tasks/${taskId}/auction`)}
+                  className="w-full py-2.5 rounded-xl bg-white text-[#0B0B09] text-[11px] font-mono font-medium tracking-widest hover:bg-white/90 transition-colors">
+                  VIEW LIVE AUCTION →
+                </button>
+              )}
+              {["DELIVERY_PENDING","DELIVERY_RECEIVED","EVALUATING"].includes(task.state) && (
+                <button onClick={() => router.push(`/tasks/${taskId}/delivery`)}
+                  className="w-full py-2.5 rounded-xl bg-white text-[#0B0B09] text-[11px] font-mono font-medium tracking-widest hover:bg-white/90 transition-colors">
+                  TRACK DELIVERY →
+                </button>
+              )}
+              <button onClick={() => router.push("/dashboard")}
+                className="w-full py-2.5 rounded-xl border border-white/[0.10] text-xs font-mono text-white/40 hover:text-white/60 hover:border-white/20 transition-all tracking-widest">
+                ← DASHBOARD
+              </button>
             </div>
-
-            <button onClick={() => router.push("/dashboard")} className="w-full py-2.5 rounded-xl border border-white/[0.10] text-xs font-mono text-white/40 hover:text-white/60 hover:border-white/20 transition-all tracking-widest">
-              BACK TO DASHBOARD
-            </button>
 
           </div>
         </div>

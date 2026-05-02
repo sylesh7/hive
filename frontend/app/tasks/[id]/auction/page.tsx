@@ -82,13 +82,23 @@ export default function AuctionPage() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
   const taskId = params.id
-  const { activeTasks, taskBids, taskScouts } = useBackendStore()
+  const { activeTasks, historyTasks, taskBids, taskScouts } = useBackendStore()
   const task   = activeTasks.find(t => t.task_id === taskId)
+             ?? historyTasks.find(t => t.task_id === taskId)
   const bids   = taskBids[taskId]  ?? []
   const scouts = taskScouts[taskId] ?? []
   const [timeLeft, setTimeLeft]   = useState(0)
   const [accepting, setAccepting] = useState<string | null>(null)
   const [escrowTx, setEscrowTx]   = useState<string | null>(null)
+
+  // Auto-redirect once task moves past auction phase
+  useEffect(() => {
+    if (!task) return
+    const postAuction = ["DELIVERY_PENDING", "DELIVERY_RECEIVED", "EVALUATING", "SETTLED", "REFUNDED"]
+    if (postAuction.includes(task.state)) {
+      router.replace(`/tasks/${taskId}/delivery`)
+    }
+  }, [task?.state, taskId, router])
 
   useEffect(() => {
     if (!task) return

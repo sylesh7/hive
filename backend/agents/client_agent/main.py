@@ -367,15 +367,19 @@ class ClientAgent:
             "winning_bid": winning_bid,
         })
 
-        # Notify winning worker
+        # Notify winning worker — include task_spec so worker can use it for LLM
         winner_peer_id = winning_bid.get("worker_peer_id", "")
+        rec = self.task_mgr.get(task_id)
         if winner_peer_id:
             accepted_msg = BidAccepted(
                 task_id=task_id,
                 agreed_price_usdc=winning_bid.get("bid_price_usdc", 0),
                 worker_peer_id=winner_peer_id,
             )
-            await self.axl.send(winner_peer_id, accepted_msg.to_dict())
+            # Attach task_spec inline so worker doesn't need to re-request it
+            accepted_dict = accepted_msg.to_dict()
+            accepted_dict["task_spec"] = rec.spec if rec else {}
+            await self.axl.send(winner_peer_id, accepted_dict)
 
         # Notify losers
         for agent_name, peer_id in PEER_REGISTRY.items():
@@ -422,21 +426,34 @@ class ClientAgent:
         )
         await self._ws.broadcast("DELIVERY_RECEIVED", {"task_id": task_id, "delivery": raw})
 
-        # Forward to evaluator
+        # Forward to evaluator — try registry first, then broadcast to all peers.
+        # Workers ignore DELIVERY messages; only the evaluator handles them.
         eval_peer_id = PEER_REGISTRY.get(EVAL_NAME, "")
+        rec = self.task_mgr.get(task_id)
+        eval_payload = {
+            **raw,
+            "task_spec": rec.spec if rec else {},
+            "client_peer_id": self._self_peer_id,
+        }
+
         if eval_peer_id:
-            rec = self.task_mgr.get(task_id)
-            eval_payload = {
-                **raw,
-                "task_spec": rec.spec if rec else {},
-                "client_peer_id": self._self_peer_id,
-            }
             await self.axl.send(eval_peer_id, eval_payload)
-            self.task_mgr.transition(task_id, TaskState.EVALUATING)
-            await self._ws.broadcast("EVALUATING", {"task_id": task_id})
         else:
-            logger.warning("Evaluator peer not found — auto-passing")
-            await self._settle(task_id, "PASS", "Auto-passed: evaluator unavailable")
+            # Evaluator hasn't sent HELLO yet — broadcast to all; evaluator self-selects
+            try:
+                all_peers = await self.axl.list_peer_ids()
+                if all_peers:
+                    await self.axl.broadcast(all_peers, eval_payload)
+                    logger.info(f"Delivery broadcast to {len(all_peers)} peers (evaluator not registered)")
+                else:
+                    raise RuntimeError("No AXL peers found")
+            except Exception as e:
+                logger.warning(f"Evaluator broadcast failed: {e} — auto-passing")
+                await self._settle(task_id, "PASS", "Auto-passed: evaluator unavailable")
+                return
+
+        self.task_mgr.transition(task_id, TaskState.EVALUATING)
+        await self._ws.broadcast("EVALUATING", {"task_id": task_id})
 
     # ── Evaluation & settlement ───────────────────────────────────────────────
 
@@ -445,8 +462,10 @@ class ClientAgent:
         verdict = raw.get("verdict", "FAIL")
         reason  = raw.get("reason", "")
 
+        # B2 fix: transition to the correct terminal state, not EVALUATING
+        new_state = TaskState.SETTLED if verdict == "PASS" else TaskState.REFUNDED
         self.task_mgr.transition(
-            task_id, TaskState.EVALUATING,
+            task_id, new_state,
             verdict=verdict, verdict_reason=reason
         )
         await self._ws.broadcast("EVALUATION_VERDICT", {
@@ -501,7 +520,12 @@ class ClientAgent:
                 tags=["hivebid", "automated"],
                 evidence_url=f"https://hivebid.xyz/tasks/{task_id}",
             )
-            self.task_mgr.transition(task_id, task_id, reputation_tx_hash=tx)
+            # B1 fix: use correct state enum, not task_id string
+            rec = self.task_mgr.get(task_id)
+            if rec:
+                rec.reputation_tx_hash = tx
+                rec.updated_at = __import__('time').time()
+                rec.save()
             await self._ws.broadcast("REPUTATION_UPDATED", {
                 "task_id": task_id,
                 "score":   score,

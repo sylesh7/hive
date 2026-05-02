@@ -54,6 +54,8 @@ class BaseWorker(ABC):
         self._self_peer_id = ""
         # task_id → accepted task spec
         self._active_tasks: dict[str, dict] = {}
+        # task_id → original TASK_ANNOUNCEMENT spec (for LLM context)
+        self._task_specs: dict[str, dict] = {}
 
     # ── Abstract interface ────────────────────────────────────────────────────
 
@@ -168,6 +170,9 @@ class BaseWorker(ABC):
         if max_budget <= 0:
             return
 
+        # Cache the full task spec for use in LLM prompt later
+        self._task_specs[task_id] = raw
+
         # Slight random delay so workers don't all bid at once (realistic)
         await asyncio.sleep(random.uniform(0.5, 3.0))
 
@@ -252,6 +257,10 @@ class BaseWorker(ABC):
 
         self._active_tasks[task_id] = raw
 
+        # Also update cached spec if client sent it with the acceptance
+        if "task_spec" in raw and raw["task_spec"]:
+            self._task_specs[task_id] = raw["task_spec"]
+
         # Send started status
         await self._send_status(client_peer_id, task_id, "started", 0, "Starting work…")
 
@@ -286,12 +295,15 @@ class BaseWorker(ABC):
         Sends incremental WORKER_STATUS updates.
         Returns the deliverable content as a string.
         """
-        # Get task spec from our local cache or from the accepted message
-        accepted = self._active_tasks.get(task_id, {})
-        task_spec = accepted.get("task_spec", {})
+        # B5 fix: use cached TASK_ANNOUNCEMENT spec, not the BID_ACCEPTED message
+        task_spec = self._task_specs.get(task_id, {})
+        if not task_spec:
+            # Fallback: try from accepted message
+            accepted = self._active_tasks.get(task_id, {})
+            task_spec = accepted.get("task_spec", accepted)
 
-        prompt = self.build_prompt(task_spec or accepted)
-        logger.info(f"[{self.agent_name}] calling Groq ({GROQ_MODEL})…")
+        prompt = self.build_prompt(task_spec)
+        logger.info(f"[{self.agent_name}] calling Groq ({GROQ_MODEL})… task='{task_spec.get('title','?')}'")
 
         await self._send_status(client_peer_id, task_id, "in_progress", 25, "Analyzing task requirements…")
 

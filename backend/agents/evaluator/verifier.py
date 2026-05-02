@@ -28,14 +28,15 @@ def verify_deliverable(task_spec: dict, delivery: dict) -> tuple[str, str]:
     if content and len(content.strip()) < 50:
         return "FAIL", f"Deliverable too short ({len(content)} chars) — does not meet minimum quality threshold"
 
-    # Structural checks per task type
-    if task_type == "logo_design":
+    # Structural checks per task type (support both hyphenated and underscore forms)
+    t = task_type.lower().replace("-", "_")
+    if t in ("logo_design", "logo"):
         return _verify_logo(task_spec, content)
-    elif task_type == "code_audit":
+    elif t in ("code_audit", "code"):
         return _verify_code_audit(task_spec, content)
-    elif task_type == "research_report":
+    elif t in ("research_report", "research"):
         return _verify_research(task_spec, content)
-    elif task_type == "content_writing":
+    elif t in ("content_writing", "content"):
         return _verify_content(task_spec, content)
     else:
         # Generic: content must be present and non-trivial

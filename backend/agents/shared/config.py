@@ -32,18 +32,20 @@ GROQ_MODEL    = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # ── AXL node ports ────────────────────────────────────────────────────────────
 # api_port  = HTTP API port (Python agent talks to this)
-# tls_port  = P2P listen port (AXL nodes peer with each other)
-# tcp_port  = internal gVisor TCP port (must be unique per node)
+# tls_port  = P2P listen port (AXL nodes peer with each other over TLS)
+# tcp_port  = gVisor TCP port: ALL nodes MUST use the same value (7000).
+#             DialPeerConnection dials [remote_ygg_ipv6]:tcp_port using the
+#             SENDER's tcp_port, so sender and receiver must agree on this port.
 AXL_PORTS = {
     "client":        {"api_port": 9002, "tls_port": 9102, "tcp_port": 7000},
-    "scout_cost":    {"api_port": 9012, "tls_port": 9112, "tcp_port": 7001},
-    "scout_quality": {"api_port": 9013, "tls_port": 9113, "tcp_port": 7002},
-    "scout_speed":   {"api_port": 9014, "tls_port": 9114, "tcp_port": 7003},
-    "worker_a":      {"api_port": 9015, "tls_port": 9115, "tcp_port": 7004},
-    "worker_b":      {"api_port": 9016, "tls_port": 9116, "tcp_port": 7005},
-    "worker_c":      {"api_port": 9017, "tls_port": 9117, "tcp_port": 7006},
-    "worker_d":      {"api_port": 9018, "tls_port": 9118, "tcp_port": 7007},
-    "evaluator":     {"api_port": 9019, "tls_port": 9119, "tcp_port": 7008},
+    "scout_cost":    {"api_port": 9012, "tls_port": 9112, "tcp_port": 7000},
+    "scout_quality": {"api_port": 9013, "tls_port": 9113, "tcp_port": 7000},
+    "scout_speed":   {"api_port": 9014, "tls_port": 9114, "tcp_port": 7000},
+    "worker_a":      {"api_port": 9015, "tls_port": 9115, "tcp_port": 7000},
+    "worker_b":      {"api_port": 9016, "tls_port": 9116, "tcp_port": 7000},
+    "worker_c":      {"api_port": 9017, "tls_port": 9117, "tcp_port": 7000},
+    "worker_d":      {"api_port": 9018, "tls_port": 9118, "tcp_port": 7000},
+    "evaluator":     {"api_port": 9019, "tls_port": 9119, "tcp_port": 7000},
 }
 
 # ── WebSocket / REST ──────────────────────────────────────────────────────────
