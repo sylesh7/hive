@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { ConnectButton } from "@/components/connect-button"
 
 const NAV_LINKS = [
@@ -29,7 +30,7 @@ export function MobileNav() {
           className="flex items-center justify-between px-5 py-3 rounded-2xl border border-white/[0.08]"
           style={NAV_STYLE}
         >
-          <span className="font-pixel text-xs tracking-[0.25em] text-white/80">HIVEBID</span>
+          <Link href="/" className="font-pixel text-xs tracking-[0.25em] text-white/80 hover:text-white transition-colors">HIVEBID</Link>
 
           {/* Desktop links */}
           <div className="hidden md:flex items-center gap-7">

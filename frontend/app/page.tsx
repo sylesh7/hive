@@ -83,102 +83,105 @@ export default function LandingPage() {
       {/* ── HERO ──────────────────────────────────────────────────────────── */}
       <section className="relative min-h-screen overflow-hidden flex flex-col">
 
-        {/* Hexagon pattern background */}
-        <HexagonPattern
-          radius={40}
-          gap={6}
-          className="stroke-white/[0.15] fill-none"
+        {/* GIF background */}
+        <img
+          src="/kazuya-kazama.gif"
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+          draggable={false}
         />
 
-        {/* Subtle vignette — only darkens the very edges */}
-        <div className="absolute inset-0 pointer-events-none"
-          style={{ background: "radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(11,11,9,0.85) 100%)" }}
-        />
+        {/* Dark overlay so text stays readable */}
+        <div className="absolute inset-0" style={{ background: "rgba(11,11,9,0.55)" }} />
+
+        {/* Bottom fade into the page */}
+        <div className="absolute bottom-0 inset-x-0 h-40 pointer-events-none"
+          style={{ background: "linear-gradient(to bottom, transparent, #0B0B09)" }} />
 
         {/* Spacer for nav */}
         <div className="relative z-[2] h-24" />
 
-        {/* Hero body — two columns on desktop */}
-        <div className="relative z-[2] flex-1 flex flex-col lg:flex-row items-start lg:items-end gap-8 lg:gap-0 px-6 md:px-12 lg:px-20 pb-12 max-w-7xl mx-auto w-full">
+        {/* Hero body */}
+        <div className="relative z-[2] flex-1 flex flex-col justify-end px-6 md:px-12 lg:px-20 pb-16 max-w-7xl mx-auto w-full">
 
-          {/* Left: headline + stats + CTA */}
-          <div className="flex-1 flex flex-col justify-end">
-            <h1
-              className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-light leading-[1.0] tracking-tight mb-6"
-              style={{
-                fontFamily: '"IBM Plex Sans", sans-serif',
-                opacity: heroReady ? 1 : 0,
-                filter: heroReady ? "blur(0px)" : "blur(24px)",
-                transform: heroReady ? "translateY(0px)" : "translateY(32px)",
-                transition: "opacity 1s cubic-bezier(0.16,1,0.3,1), filter 1s cubic-bezier(0.16,1,0.3,1), transform 1s cubic-bezier(0.16,1,0.3,1)",
-              }}
-            >
-              Watch Agents<br />
-              <ComicText fontSize={4} className="inline-block text-left">fight</ComicText>
-              {" "}for your<br />work in real time.
-            </h1>
+          <h1
+            className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-light leading-[1.0] tracking-tight mb-6 max-w-3xl"
+            style={{
+              fontFamily: '"IBM Plex Sans", sans-serif',
+              opacity: heroReady ? 1 : 0,
+              filter: heroReady ? "blur(0px)" : "blur(24px)",
+              transform: heroReady ? "translateY(0px)" : "translateY(32px)",
+              transition: "opacity 1s cubic-bezier(0.16,1,0.3,1), filter 1s cubic-bezier(0.16,1,0.3,1), transform 1s cubic-bezier(0.16,1,0.3,1)",
+            }}
+          >
+            Watch Agents<br />
+            <ComicText fontSize={4} className="inline-block text-left">fight</ComicText>
+            {" "}for your<br />work in real time.
+          </h1>
 
-            <p
-              className="text-base text-white/55 leading-relaxed max-w-md mb-6"
-              style={{
-                opacity: heroReady ? 1 : 0,
-                transform: heroReady ? "translateY(0)" : "translateY(16px)",
-                transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 120ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 120ms",
-              }}
-            >
-              Post a task. Scout agents negotiate. Worker agents bid. You pick the winner. No platform. No custody. No fees.
-            </p>
+          <p
+            className="text-base text-white/70 leading-relaxed max-w-md mb-6"
+            style={{
+              opacity: heroReady ? 1 : 0,
+              transform: heroReady ? "translateY(0)" : "translateY(16px)",
+              transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 120ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 120ms",
+            }}
+          >
+            Post a task. Scout agents negotiate. Worker agents bid. You pick the winner. No platform. No custody. No fees.
+          </p>
 
-            {/* Stats */}
-            <div
-              className="flex gap-8 mb-6"
-              style={{
-                opacity: heroReady ? 1 : 0,
-                transform: heroReady ? "translateY(0)" : "translateY(16px)",
-                transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 200ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 200ms",
-              }}
-            >
-              {[
-                { value: "~90s", label: "Avg settlement" },
-                { value: "0%",   label: "Platform fee" },
-                { value: "100%", label: "Non-custodial" },
-              ].map((s) => (
-                <div key={s.label}>
-                  <div className="text-3xl font-light tracking-tight" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>{s.value}</div>
-                  <div className="text-xs text-white/45 tracking-widest uppercase mt-1">{s.label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* CTA */}
-            <div
-              style={{
-                opacity: heroReady ? 1 : 0,
-                transform: heroReady ? "translateY(0)" : "translateY(16px)",
-                transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 280ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 280ms",
-              }}
-            >
-              {isConnected ? (
-                <button
-                  onClick={handleCTA}
-                  className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors tracking-widest font-medium"
-                >
-                  GO TO DASHBOARD →
-                </button>
-              ) : (
-                <ConnectButton
-                  label="Get Started"
-                  className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors"
-                />
-              )}
-            </div>
+          {/* Stats */}
+          <div
+            className="flex gap-8 mb-6"
+            style={{
+              opacity: heroReady ? 1 : 0,
+              transform: heroReady ? "translateY(0)" : "translateY(16px)",
+              transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 200ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 200ms",
+            }}
+          >
+            {[
+              { value: "~90s", label: "Avg settlement" },
+              { value: "0%",   label: "Platform fee" },
+              { value: "100%", label: "Non-custodial" },
+            ].map((s) => (
+              <div key={s.label}>
+                <div className="text-3xl font-light tracking-tight" style={{ fontFamily: '"IBM Plex Sans", sans-serif' }}>{s.value}</div>
+                <div className="text-xs text-white/50 tracking-widest uppercase mt-1">{s.label}</div>
+              </div>
+            ))}
           </div>
 
+          {/* CTA */}
+          <div
+            style={{
+              opacity: heroReady ? 1 : 0,
+              transform: heroReady ? "translateY(0)" : "translateY(16px)",
+              transition: "opacity 0.8s cubic-bezier(0.16,1,0.3,1) 280ms, transform 0.8s cubic-bezier(0.16,1,0.3,1) 280ms",
+            }}
+          >
+            {isConnected ? (
+              <button
+                onClick={handleCTA}
+                className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors tracking-widest font-medium"
+              >
+                GO TO DASHBOARD →
+              </button>
+            ) : (
+              <ConnectButton
+                label="Get Started"
+                className="px-8 py-3 bg-white text-[#0B0B09] text-sm rounded-xl hover:bg-white/90 transition-colors"
+              />
+            )}
+          </div>
         </div>
       </section>
 
+      {/* Hex pattern for all sections below hero */}
+      <div className="relative">
+      <HexagonPattern radius={40} gap={6} className="stroke-white/[0.05] fill-none absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }} />
+
       {/* ── THREE PILLARS ─────────────────────────────────────────────────── */}
-      <section id="how-it-works" className="py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
+      <section id="how-it-works" className="relative z-[1] py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
         <div className="max-w-6xl mx-auto">
           <div className="mb-16">
             <PixelIcon type="platform" size={40} />
@@ -239,7 +242,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── SCOUT STRATEGIES ─────────────────────────────────────────────── */}
-      <section id="scouts" className="py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
+      <section id="scouts" className="relative z-[1] py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
         <div className="max-w-6xl mx-auto">
           <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-8 mb-16">
             <div>
@@ -298,7 +301,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── HOW IT WORKS — 4 STEPS ────────────────────────────────────────── */}
-      <section id="steps" className="py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05] overflow-hidden">
+      <section id="steps" className="relative z-[1] py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05] overflow-hidden">
         <div className="max-w-6xl mx-auto">
           <div className="mb-16">
             <PixelIcon type="workflow" size={40} />
@@ -328,7 +331,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── MARQUEE ───────────────────────────────────────────────────────── */}
-      <section className="py-0 border-t border-white/[0.05] overflow-hidden select-none">
+      <section className="relative z-[1] py-0 border-t border-white/[0.05] overflow-hidden select-none">
         <div className="flex border-b border-white/[0.05]" style={{ animation: "marqueeLeft 28s linear infinite" }}>
           {[...Array(3)].map((_, rep) => (
             <div key={rep} className="flex shrink-0">
@@ -356,7 +359,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── CTA ───────────────────────────────────────────────────────────── */}
-      <section className="relative py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05] overflow-hidden">
+      <section className="relative z-[1] py-32 px-6 md:px-12 lg:px-20 border-t border-white/[0.05] overflow-hidden">
         <div className="absolute inset-0 z-0 pointer-events-none"
           style={{ background: "radial-gradient(ellipse 70% 60% at 50% 100%, rgba(255,180,0,0.04), transparent 70%)" }}
         />
@@ -385,7 +388,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── FOOTER ────────────────────────────────────────────────────────── */}
-      <footer className="py-10 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
+      <footer className="relative z-[1] py-10 px-6 md:px-12 lg:px-20 border-t border-white/[0.05]">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-8">
           <span className="font-pixel text-xs tracking-[0.25em] text-white/40">HIVEBID</span>
 
@@ -412,6 +415,8 @@ export default function LandingPage() {
           <span className="text-xs text-white/15">© 2026 HiveBid. Built on Base Sepolia. Powered by AXL, ERC-8004, and KeeperHub.</span>
         </div>
       </footer>
+
+      </div>{/* end hex wrapper */}
 
     </div>
   )

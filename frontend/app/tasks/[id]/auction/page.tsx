@@ -22,7 +22,7 @@ function ScoutCard({ strategy, rec, onAccept, accepting }: {
 }) {
   const labels = { cost:"Cost Scout", quality:"Quality Scout", speed:"Speed Scout" }
   const tags   = { cost:"CHEAPEST",   quality:"BEST REP",      speed:"FASTEST" }
-  const border = { cost:"border-amber-500/30 bg-amber-500/5", quality:"border-blue-500/30 bg-blue-500/5", speed:"border-purple-500/30 bg-purple-500/5" }
+  const border = { cost:"border-amber-500/30 bg-[#111110]", quality:"border-blue-500/30 bg-[#111110]", speed:"border-purple-500/30 bg-[#111110]" }
   const dot    = { cost:"bg-amber-400", quality:"bg-blue-400", speed:"bg-purple-400" }
   return (
     <div className={`rounded-2xl border p-5 flex flex-col gap-4 ${border[strategy]}`}>
@@ -36,7 +36,7 @@ function ScoutCard({ strategy, rec, onAccept, accepting }: {
       </div>
       {rec ? (
         <>
-          <div className="rounded-xl border border-white/[0.08] bg-black/20 p-3 space-y-2">
+          <div className="rounded-xl border border-white/[0.12] bg-[#0f0f0d] p-3 space-y-2">
             {[
               { k:"WORKER", v: rec.top_bid.worker_name },
               { k:"REP", v: `${rec.top_bid.worker_reputation_score}/100` },
@@ -146,7 +146,7 @@ export default function AuctionPage() {
         )}
 
         {!task ? (
-          <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-12 text-center">
+          <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-12 text-center">
             <p className="text-white/40 text-sm mb-4">Task not found. It may have already closed.</p>
             <button onClick={()=>router.push("/dashboard")} className="text-[10px] font-mono text-white/40 hover:text-white/60 tracking-widest">← DASHBOARD</button>
           </div>

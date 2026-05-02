@@ -156,7 +156,7 @@ export default function DeliveryPage() {
           </div>
         )}
         {isRefunded && task?.refund_tx_hash && (
-          <div className="mb-6 rounded-xl border border-white/[0.12] bg-white/[0.03] px-5 py-4 flex items-center gap-3">
+          <div className="mb-6 rounded-xl border border-white/[0.12] bg-[#111110] px-5 py-4 flex items-center gap-3">
             <span className="w-2 h-2 rounded-full bg-white/40 shrink-0" />
             <div>
               <p className="text-sm font-light text-white/60">Refund processed — funds returned to your wallet.</p>
@@ -166,7 +166,7 @@ export default function DeliveryPage() {
         )}
 
         {!task ? (
-          <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-12 text-center">
+          <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-12 text-center">
             <p className="text-white/40 text-sm mb-4">Task not found.</p>
             <button onClick={()=>router.push("/dashboard")} className="text-[10px] font-mono text-white/40 hover:text-white/60 tracking-widest">← DASHBOARD</button>
           </div>
@@ -225,7 +225,7 @@ export default function DeliveryPage() {
 
               {/* Verdict */}
               {isDone && (
-                <div className={`rounded-2xl border p-5 ${isSettled ? "border-emerald-500/30 bg-emerald-500/5" : "border-white/[0.10] bg-white/[0.02]"}`}>
+                <div className={`rounded-2xl border p-5 ${isSettled ? "border-emerald-500/30 bg-[#0d1a14]" : "border-white/[0.12] bg-[#111110]"}`}>
                   <div className="text-[10px] font-mono text-white/40 tracking-widest mb-2">EVALUATOR VERDICT</div>
                   <div className={`text-sm font-light ${isSettled ? "text-emerald-300" : "text-white/60"}`}>
                     {isSettled ? "✓ PASS — Delivery met spec requirements" : "✗ FAIL — Delivery did not meet spec requirements"}
@@ -246,7 +246,7 @@ export default function DeliveryPage() {
                   </div>
                 </div>
               ) : !isDone ? (
-                <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-12 text-center">
+                <div className="rounded-2xl border border-white/[0.12] bg-[#111110] p-12 text-center">
                   <div className="w-6 h-6 rounded-full border border-white/20 border-t-white/50 animate-spin mx-auto mb-3" />
                   <p className="text-white/30 text-sm">Worker agent is executing your task…</p>
                   <p className="text-[10px] font-mono text-white/20 mt-2">Delivery will appear here automatically</p>
