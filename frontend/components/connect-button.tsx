@@ -17,12 +17,15 @@ export function ConnectButton({ className = "", label = "CONNECT WALLET" }: Conn
   const isConnecting = status === "connecting"
   const userInitiated = useRef(false)
 
+  const { address } = useWeb3Auth()
+
   useEffect(() => {
     if (!userInitiated.current || status !== "connected") return
     userInitiated.current = false
-    const onboarded = typeof window !== "undefined" && localStorage.getItem(ONBOARDING_KEY) === "1"
+    const key = address ? `${ONBOARDING_KEY}_${address.toLowerCase()}` : ONBOARDING_KEY
+    const onboarded = typeof window !== "undefined" && localStorage.getItem(key) === "1"
     router.push(onboarded ? "/dashboard" : "/onboarding")
-  }, [status, router])
+  }, [status, address, router])
 
   const handleConnect = async () => {
     try {
