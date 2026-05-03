@@ -1,0 +1,19 @@
+{
+  "PrivateKeyPath": "D:\\Projects\\hive\\backend\\axl_nodes\\scout_cost\\private.pem",
+  "Peers": [
+    "tls://127.0.0.1:9102",
+    "tls://127.0.0.1:9113",
+    "tls://127.0.0.1:9114",
+    "tls://127.0.0.1:9115",
+    "tls://127.0.0.1:9116",
+    "tls://127.0.0.1:9117",
+    "tls://127.0.0.1:9118",
+    "tls://127.0.0.1:9119"
+  ],
+  "Listen": [
+    "tls://0.0.0.0:9112"
+  ],
+  "api_port": 9012,
+  "tcp_port": 7000,
+  "bridge_addr": "127.0.0.1"
+}
