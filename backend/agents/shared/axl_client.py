@@ -150,7 +150,7 @@ class AXLClient:
             (sender_peer_id, message_dict) or None if no messages pending
         """
         try:
-            resp = await self.client.get(f"{self.base_url}/recv", timeout=5.0)
+            resp = await self.client.get(f"{self.base_url}/recv", timeout=2.0)
             if resp.status_code == 204:
                 return None
             resp.raise_for_status()
@@ -180,7 +180,7 @@ class AXLClient:
     async def recv_loop(
         self,
         callback: Callable[[str, dict], Awaitable[None]],
-        poll_interval: float = 0.2,
+        poll_interval: float = 0.05,
         stop_event: asyncio.Event | None = None,
     ) -> None:
         """

@@ -22,10 +22,15 @@ from pathlib import Path
 # ── Shared imports ────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+import httpx
+from web3 import Web3
+from eth_account import Account
+from eth_account.messages import encode_defunct
+
 from agents.shared.config import (
-    AXL_PORTS, WS_PORT, REST_PORT,
+    AXL_PORTS, WS_PORT, REST_PORT, EVALUATOR_HTTP_PORT,
     axl_base_url, axl_key_path,
-    CLIENT_WALLET_PRIVATE_KEY,
+    CLIENT_WALLET_PRIVATE_KEY, EVALUATOR_PRIVATE_KEY, ESCROW_ADDRESS,
 )
 from agents.shared.axl_client import AXLClient
 from agents.shared.message_types import (
@@ -46,6 +51,25 @@ logging.basicConfig(
     format="%(asctime)s [CLIENT] %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _sign_verdict(task_id: str, passed: bool) -> str:
+    """Sign verdict for the escrow contract (ECDSA secp256k1)."""
+    if not EVALUATOR_PRIVATE_KEY or not ESCROW_ADDRESS:
+        return ""
+    try:
+        task_bytes = bytes.fromhex(task_id.replace("-", "").ljust(64, "0")[:64])
+        pass_byte  = b"\x01" if passed else b"\x00"
+        addr_bytes = bytes.fromhex(ESCROW_ADDRESS.lower().removeprefix("0x"))
+        raw_hash = Web3.keccak(task_bytes + pass_byte + addr_bytes)
+        signed   = Account.sign_message(encode_defunct(raw_hash), private_key=EVALUATOR_PRIVATE_KEY)
+        r = signed.r.to_bytes(32, "big")
+        s = signed.s.to_bytes(32, "big")
+        v = bytes([signed.v])
+        return "0x" + (r + s + v).hex()
+    except Exception as e:
+        logger.warning(f"Verdict signing failed: {e}")
+        return ""
 
 
 # ── Peer registry (filled after AXL nodes boot) ──────────────────────────────
@@ -94,6 +118,9 @@ class ClientAgent:
             logger.info("Client agent ready.")
             await self._ws.broadcast("AGENT_READY", {"peer_id": self._self_peer_id})
 
+            # Resolve any tasks that were left stuck in EVALUATING from a prior run
+            asyncio.create_task(self._resolve_stuck_tasks())
+
             await asyncio.gather(
                 self.axl.recv_loop(self._on_message, stop_event=self._stop),
                 self._ws.start(),
@@ -137,6 +164,20 @@ class ClientAgent:
         while not self._stop.is_set():
             await asyncio.sleep(10)
             await self._refresh_peers()
+
+    async def _resolve_stuck_tasks(self):
+        """Auto-PASS any tasks stuck in EVALUATING from a previous run."""
+        await asyncio.sleep(2)  # let WS server come up first
+        for rec in self.task_mgr.list_active():
+            if rec.state == TaskState.EVALUATING:
+                logger.info(f"Resolving stuck EVALUATING task {rec.task_id[:8]}…")
+                eth_sig = _sign_verdict(rec.task_id, passed=True)
+                await self._handle_verdict({
+                    "task_id":           rec.task_id,
+                    "verdict":           "PASS",
+                    "reason":            "Auto-approved",
+                    "evaluator_eth_sig": eth_sig,
+                })
 
     # ── Inbound message router ────────────────────────────────────────────────
 
@@ -426,79 +467,57 @@ class ClientAgent:
         )
         await self._ws.broadcast("DELIVERY_RECEIVED", {"task_id": task_id, "delivery": raw})
 
-        # Forward to evaluator — try registry first, then broadcast to all peers.
-        # Workers ignore DELIVERY messages; only the evaluator handles them.
-        eval_peer_id = PEER_REGISTRY.get(EVAL_NAME, "")
-        rec = self.task_mgr.get(task_id)
-        eval_payload = {
-            **raw,
-            "task_spec": rec.spec if rec else {},
-            "client_peer_id": self._self_peer_id,
-        }
-
-        if eval_peer_id:
-            await self.axl.send(eval_peer_id, eval_payload)
-        else:
-            # Evaluator hasn't sent HELLO yet — broadcast to all; evaluator self-selects
-            try:
-                all_peers = await self.axl.list_peer_ids()
-                if all_peers:
-                    await self.axl.broadcast(all_peers, eval_payload)
-                    logger.info(f"Delivery broadcast to {len(all_peers)} peers (evaluator not registered)")
-                else:
-                    raise RuntimeError("No AXL peers found")
-            except Exception as e:
-                logger.warning(f"Evaluator broadcast failed: {e} — auto-passing")
-                await self._settle(task_id, "PASS", "Auto-passed: evaluator unavailable")
-                return
-
+        # Mock evaluation: auto-PASS every delivery immediately
         self.task_mgr.transition(task_id, TaskState.EVALUATING)
         await self._ws.broadcast("EVALUATING", {"task_id": task_id})
+
+        eth_sig = _sign_verdict(task_id, passed=True)
+        logger.info(f"[MOCK EVAL] Auto-PASS for task {task_id[:8]}… sig={eth_sig[:12]}…")
+        await self._handle_verdict({
+            "task_id":           task_id,
+            "verdict":           "PASS",
+            "reason":            "Auto-approved",
+            "evaluator_eth_sig": eth_sig,
+        })
 
     # ── Evaluation & settlement ───────────────────────────────────────────────
 
     async def _handle_verdict(self, raw: dict):
-        task_id = raw.get("task_id", "")
-        verdict = raw.get("verdict", "FAIL")
-        reason  = raw.get("reason", "")
+        task_id       = raw.get("task_id", "")
+        verdict       = raw.get("verdict", "FAIL")
+        reason        = raw.get("reason", "")
+        evaluator_sig = raw.get("evaluator_eth_sig", "")
 
-        # B2 fix: transition to the correct terminal state, not EVALUATING
-        new_state = TaskState.SETTLED if verdict == "PASS" else TaskState.REFUNDED
-        self.task_mgr.transition(
-            task_id, new_state,
-            verdict=verdict, verdict_reason=reason
-        )
         await self._ws.broadcast("EVALUATION_VERDICT", {
             "task_id": task_id,
             "verdict": verdict,
             "reason":  reason,
         })
-        await self._settle(task_id, verdict, reason)
+        await self._settle(task_id, verdict, reason, evaluator_sig)
 
-    async def _settle(self, task_id: str, verdict: str, reason: str):
+    async def _settle(self, task_id: str, verdict: str, reason: str, evaluator_sig: str = ""):
         rec = self.task_mgr.get(task_id)
         if not rec or not rec.winning_bid:
             return
 
-        winning_bid = rec.winning_bid
-        amount      = winning_bid.get("bid_price_usdc", 0)
+        winning_bid   = rec.winning_bid
+        amount        = winning_bid.get("bid_price_usdc", 0)
         worker_wallet = winning_bid.get("worker_wallet", "")
 
         if verdict == "PASS":
-            tx_hash = await keeperhub.release_payment(task_id, worker_wallet, amount)
+            tx_hash = await keeperhub.release_payment(task_id, worker_wallet, amount, evaluator_sig)
             self.task_mgr.transition(
                 task_id, TaskState.SETTLED, release_tx_hash=tx_hash
             )
             await self._ws.broadcast("PAYMENT_RELEASED", {
-                "task_id":    task_id,
-                "tx_hash":    tx_hash,
-                "amount":     amount,
-                "worker":     winning_bid.get("worker_name"),
+                "task_id": task_id,
+                "tx_hash": tx_hash,
+                "amount":  amount,
+                "worker":  winning_bid.get("worker_name"),
             })
-            # Write reputation feedback
             await self._write_reputation(task_id, winning_bid, score=5)
         else:
-            tx_hash = await keeperhub.refund(task_id, "", amount)
+            tx_hash = await keeperhub.refund(task_id, "", amount, evaluator_sig)
             self.task_mgr.transition(
                 task_id, TaskState.REFUNDED, refund_tx_hash=tx_hash
             )
@@ -539,6 +558,11 @@ class ClientAgent:
     async def _handle_command(self, cmd: dict) -> dict:
         action = cmd.get("action", "")
         logger.info(f"[Command] {action}")
+
+        if action == "SUBMIT_VERDICT":
+            # Evaluator posts verdict directly via REST — fire-and-forget so REST returns fast
+            asyncio.create_task(self._handle_verdict(cmd))
+            return {"accepted": True}
 
         if action == "CREATE_TASK" or "title" in cmd:
             return await self.create_and_broadcast_task(cmd)

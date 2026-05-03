@@ -53,9 +53,9 @@ contract HiveBidEscrow is ReentrancyGuard {
     }
 
     /**
-     * Lock on behalf of a client. Used by KeeperHub's managed wallet acting as intermediary.
-     * KeeperHub wallet must hold USDC and have approved this contract.
-     * `client` is stored for the refund path so funds return to the right address.
+     * Lock on behalf of a client. Called by KeeperHub's managed wallet.
+     * The `client` address must have pre-approved this contract to spend `amount` USDC.
+     * USDC is pulled directly from `client`, not from the KeeperHub caller.
      */
     function lockFor(
         bytes32 taskId,
@@ -64,7 +64,21 @@ contract HiveBidEscrow is ReentrancyGuard {
         uint256 amount,
         uint256 deadline
     ) external nonReentrant {
-        _lock(taskId, client, worker, amount, deadline);
+        if (tasks[taskId].status != Status.Empty) revert TaskExists();
+
+        tasks[taskId] = Task({
+            client: client,
+            worker: worker,
+            amount: amount,
+            status: Status.Locked,
+            deadline: deadline
+        });
+
+        // Pull USDC from the client wallet (client must have approved this contract)
+        bool ok = usdc.transferFrom(client, address(this), amount);
+        if (!ok) revert TransferFailed();
+
+        emit Locked(taskId, client, worker, amount);
     }
 
     function _lock(

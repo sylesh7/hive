@@ -25,6 +25,14 @@ ERC8004_REPUTATION_ADDRESS = "0x8004bd8daB57f14Ed299135749a5CB5c42d341BF"
 
 # ── Wallets ───────────────────────────────────────────────────────────────────
 CLIENT_WALLET_PRIVATE_KEY = os.getenv("CLIENT_WALLET_PRIVATE_KEY", "")
+# Ethereum key used by evaluator to sign verdicts for the escrow contract.
+# Defaults to the client key for demo — use a separate key in production.
+EVALUATOR_PRIVATE_KEY = os.getenv("EVALUATOR_PRIVATE_KEY", CLIENT_WALLET_PRIVATE_KEY)
+
+# ── Contracts ─────────────────────────────────────────────────────────────────
+ESCROW_ADDRESS = os.getenv("ESCROW_ADDRESS", "")
+# Base Sepolia USDC (Circle): https://developers.circle.com/developer/docs/usdc-on-testnet
+USDC_ADDRESS   = os.getenv("USDC_ADDRESS", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
 
 # ── Groq ─────────────────────────────────────────────────────────────────────
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
@@ -49,8 +57,9 @@ AXL_PORTS = {
 }
 
 # ── WebSocket / REST ──────────────────────────────────────────────────────────
-WS_PORT   = int(os.getenv("WS_PORT", "8765"))
-REST_PORT = int(os.getenv("REST_PORT", "8766"))
+WS_PORT            = int(os.getenv("WS_PORT", "8765"))
+REST_PORT          = int(os.getenv("REST_PORT", "8766"))
+EVALUATOR_HTTP_PORT = int(os.getenv("EVALUATOR_HTTP_PORT", "9500"))
 
 # ── Auction ───────────────────────────────────────────────────────────────────
 DEFAULT_AUCTION_WINDOW_SECS = int(os.getenv("DEFAULT_AUCTION_WINDOW_SECS", "90"))

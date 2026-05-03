@@ -118,6 +118,8 @@ class WSServer:
 
         if path == "/tasks":
             action = "GET_TASKS"
+        elif path == "/verdict":
+            action = "SUBMIT_VERDICT"
         elif path == "/task" or path == "/task/":
             action = "CREATE_TASK"
         elif task_id and path.endswith("/accept"):
@@ -147,6 +149,8 @@ class WSServer:
         app.router.add_get("/task/{task_id}",                 self._rest_handler)
         app.router.add_post("/task/{task_id}/accept",         self._rest_handler)
         app.router.add_post("/task/{task_id}/cancel",         self._rest_handler)
+        # Direct verdict injection from evaluator (bypasses AXL)
+        app.router.add_post("/verdict",                       self._rest_handler)
 
         runner = web.AppRunner(app)
         await runner.setup()

@@ -1,36 +1,97 @@
 """
-Real KeeperHub integration for HiveBid escrow operations.
+KeeperHub integration for HiveBid escrow operations.
 
-Replaces the stub with actual HTTP calls to the KeeperHub Direct Execution API.
-Mirrors the logic in keeperhub/client.js and keeperhub/escrow.js.
+All contract writes (lock, release, refund) go through KeeperHub's
+Direct Execution API so retry logic, gas management, and audit trails
+are handled externally.
 
-Required env vars (add to backend/.env):
-  KH_API_KEY      — KeeperHub API key (kh_ prefix)
-  KH_NETWORK      — e.g. "Base Sepolia"
-  ESCROW_ADDRESS  — deployed HiveBidEscrow contract address
+USDC approval (one-time per session) is done directly from the client
+wallet via web3.py, since KeeperHub's managed wallet only submits the
+lockFor call — it does not need to hold USDC after the contract fix.
+
+Required backend/.env:
+  KH_API_KEY              — KeeperHub API key (kh_ prefix)
+  KH_NETWORK              — "Base Sepolia"
+  KH_WALLET_ADDRESS       — KeeperHub's managed wallet (caller of lockFor)
+  ESCROW_ADDRESS          — deployed HiveBidEscrow address
+  CLIENT_WALLET_PRIVATE_KEY — client wallet that holds USDC
+  USDC_ADDRESS            — USDC token on Base Sepolia
 """
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
+import time
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
+from web3 import Web3
+from eth_account import Account
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 
-KH_BASE_URL     = "https://app.keeperhub.com/api"
-KH_API_KEY      = os.getenv("KH_API_KEY", "").strip().strip('"')
-KH_NETWORK      = os.getenv("KH_NETWORK", "Base Sepolia")
-ESCROW_ADDRESS  = os.getenv("ESCROW_ADDRESS", "")
+KH_BASE_URL        = "https://app.keeperhub.com/api"
+KH_API_KEY         = os.getenv("KH_API_KEY", "").strip().strip('"')
+KH_NETWORK         = os.getenv("KH_NETWORK", "Base Sepolia")
+KH_WALLET_ADDRESS  = os.getenv("KH_WALLET_ADDRESS", "")
+ESCROW_ADDRESS     = os.getenv("ESCROW_ADDRESS", "")
+CLIENT_PRIVATE_KEY = os.getenv("CLIENT_WALLET_PRIVATE_KEY", "")
+USDC_ADDRESS       = os.getenv("USDC_ADDRESS", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
+RPC_URL            = os.getenv("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
+CHAIN_ID           = 84532
 
-POLL_INTERVAL   = 2.0   # seconds between status polls
-POLL_TIMEOUT    = 60.0  # seconds before giving up
+POLL_INTERVAL = 2.0
+POLL_TIMEOUT  = 120.0
 
+_ABI_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "contracts" / "artifacts" / "src" / "HiveBidEscrow.sol" / "HiveBidEscrow.json"
+)
+
+_USDC_ABI = [
+    {
+        "inputs": [
+            {"name": "spender", "type": "address"},
+            {"name": "amount",  "type": "uint256"},
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "owner",   "type": "address"},
+            {"name": "spender", "type": "address"},
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+
+@lru_cache(maxsize=1)
+def _escrow_abi() -> list:
+    data = json.loads(_ABI_PATH.read_text())
+    return data["abi"]
+
+
+# ── KeeperHub helpers ─────────────────────────────────────────────────────────
 
 def _headers() -> dict:
     if not KH_API_KEY:
@@ -41,38 +102,19 @@ def _headers() -> dict:
     }
 
 
-def _load_abi() -> list:
-    """Load HiveBidEscrow ABI from keeperhub/abi/.
-    File location: backend/agents/client_agent/keeperhub_stub.py
-    parents[0] = client_agent/
-    parents[1] = agents/
-    parents[2] = backend/
-    parents[3] = hive/ (project root)
-    """
-    abi_path = Path(__file__).resolve().parents[3] / "keeperhub" / "abi" / "HiveBidEscrow.json"
-    if abi_path.exists():
-        return json.loads(abi_path.read_text())
-    logger.warning(f"ABI not found at {abi_path} — using empty ABI (KeeperHub may still work)")
-    return []
-
-
-ESCROW_ABI = _load_abi()
-
-
-async def _contract_call(function_name: str, function_args: list) -> str:
-    """
-    POST to KeeperHub /api/execute/contract-call and poll until confirmed.
-    Returns the transaction hash.
-    """
+async def _kh_call(function_name: str, function_args: list) -> str:
+    """POST to KeeperHub /execute/contract-call and poll until confirmed."""
     if not ESCROW_ADDRESS:
-        raise RuntimeError("ESCROW_ADDRESS not set — check backend/.env")
+        raise RuntimeError(
+            "ESCROW_ADDRESS not set. Run: python backend/deploy_contract.py"
+        )
 
     payload = {
         "network":         KH_NETWORK,
         "contractAddress": ESCROW_ADDRESS,
         "functionName":    function_name,
         "functionArgs":    json.dumps(function_args),
-        "abi":             json.dumps(ESCROW_ABI),
+        "abi":             json.dumps(_escrow_abi()),
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -83,22 +125,20 @@ async def _contract_call(function_name: str, function_args: list) -> str:
         )
         body = resp.json()
         if not resp.is_success:
-            raise RuntimeError(f"KeeperHub error: {body}")
+            raise RuntimeError(f"KeeperHub API error {resp.status_code}: {body}")
 
-        # Read function → immediate result
         if "result" in body:
             return body["result"]
 
-        # Write function → poll for confirmation
         execution_id = body.get("executionId") or body.get("id")
         if not execution_id:
             raise RuntimeError(f"KeeperHub returned no executionId: {body}")
 
-        return await _poll(client, execution_id)
+        return await _kh_poll(client, execution_id)
 
 
-async def _poll(client: httpx.AsyncClient, execution_id: str) -> str:
-    """Poll KeeperHub until tx is confirmed. Returns tx hash."""
+async def _kh_poll(client: httpx.AsyncClient, execution_id: str) -> str:
+    """Poll until KeeperHub confirms the transaction. Returns tx hash."""
     deadline = asyncio.get_event_loop().time() + POLL_TIMEOUT
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(POLL_INTERVAL)
@@ -106,112 +146,158 @@ async def _poll(client: httpx.AsyncClient, execution_id: str) -> str:
             f"{KH_BASE_URL}/execute/{execution_id}/status",
             headers=_headers(),
         )
-        body = resp.json()
+        body   = resp.json()
         status = body.get("status", "")
         if status == "completed":
             tx = body.get("transactionHash") or body.get("txHash", "")
-            logger.info(f"KeeperHub confirmed: {tx}")
+            logger.info(f"[KeeperHub] confirmed tx: {tx}")
             return tx
         if status == "failed":
             raise RuntimeError(f"KeeperHub execution failed: {body.get('error')}")
-        # pending / running — keep polling
-
     raise RuntimeError(f"KeeperHub timed out (executionId={execution_id})")
 
 
-# ── USDC amount conversion ─────────────────────────────────────────────────────
+# ── USDC helpers (direct web3, no KeeperHub) ──────────────────────────────────
 
-def _usdc_to_units(amount_usdc: float) -> str:
-    """Convert float USDC to 6-decimal integer string (e.g. 25.0 → '25000000')."""
-    return str(int(round(amount_usdc * 1_000_000)))
+def _to_bytes32(task_id: str) -> str:
+    """UUID string → 0x-prefixed 32-byte hex (for contract call args)."""
+    clean  = task_id.replace("-", "")
+    padded = clean.ljust(64, "0")[:64]
+    return "0x" + padded
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+def _usdc_units(amount_usdc: float) -> int:
+    return int(round(amount_usdc * 1_000_000))
+
+
+def _ensure_usdc_approval(amount_usdc: float) -> None:
+    """
+    Approve the escrow contract to spend USDC from the client wallet.
+    Uses direct web3.py — runs synchronously in a thread executor.
+    Only submits a transaction when the current allowance is insufficient.
+    """
+    w3          = Web3(Web3.HTTPProvider(RPC_URL))
+    account     = Account.from_key(CLIENT_PRIVATE_KEY)
+    escrow_addr = Web3.to_checksum_address(ESCROW_ADDRESS)
+    usdc_addr   = Web3.to_checksum_address(USDC_ADDRESS)
+    amount      = _usdc_units(amount_usdc)
+
+    usdc      = w3.eth.contract(address=usdc_addr, abi=_USDC_ABI)
+    allowance = usdc.functions.allowance(account.address, escrow_addr).call()
+    if allowance >= amount:
+        logger.info(f"[USDC] Allowance sufficient ({allowance / 1e6:.2f} USDC) — skipping approve")
+        return
+
+    logger.info(f"[USDC] Approving escrow to spend USDC from client wallet…")
+    balance = usdc.functions.balanceOf(account.address).call()
+    if balance < amount:
+        raise RuntimeError(
+            f"Insufficient USDC: wallet has {balance / 1e6:.2f}, need {amount_usdc:.2f}. "
+            "Get test USDC at https://faucet.circle.com/"
+        )
+
+    nonce = w3.eth.get_transaction_count(account.address, "pending")
+    txn   = usdc.functions.approve(escrow_addr, 2 ** 256 - 1).build_transaction({
+        "from":     account.address,
+        "nonce":    nonce,
+        "gas":      80_000,
+        "gasPrice": w3.eth.gas_price,
+        "chainId":  CHAIN_ID,
+    })
+    signed  = account.sign_transaction(txn)
+    raw     = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+    tx_hash = w3.eth.send_raw_transaction(raw)
+    logger.info(f"[USDC] Approve tx: {tx_hash.hex()}")
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"USDC approve reverted: {tx_hash.hex()}")
+    logger.info(f"[USDC] Approved — block {receipt.blockNumber}")
+
+
+# ── Public async API ──────────────────────────────────────────────────────────
 
 async def lock_escrow(
     task_id: str,
     amount_usdc: float,
     worker_wallet: str,
-    delegation_sig: str = "",
+    deadline: int | None = None,
 ) -> str:
     """
-    Lock USDC into the HiveBidEscrow contract after bid acceptance.
-    Returns the on-chain transaction hash.
+    1. Approve escrow to spend USDC from client wallet (direct web3, idempotent).
+    2. KeeperHub calls lockFor(taskId, clientAddr, workerAddr, amount, deadline).
+    Returns the KeeperHub-confirmed on-chain transaction hash.
     """
-    logger.info(f"[KeeperHub] lock_escrow task={task_id} amount={amount_usdc} USDC → {worker_wallet}")
-    try:
-        # task_id must be bytes32 — pad to 32 bytes as hex
-        task_id_bytes32 = _to_bytes32(task_id)
-        client_addr = os.getenv("KH_WALLET_ADDRESS", "0x0000000000000000000000000000000000000000")
-        deadline    = int(asyncio.get_event_loop().time()) + 86400  # 24h
-
-        tx_hash = await _contract_call(
-            function_name="lockFor",
-            function_args=[task_id_bytes32, client_addr, worker_wallet, _usdc_to_units(amount_usdc), str(deadline)],
+    if not ESCROW_ADDRESS:
+        raise RuntimeError(
+            "ESCROW_ADDRESS not set. Run: python backend/deploy_contract.py"
         )
-        logger.info(f"[KeeperHub] escrow locked — tx: {tx_hash}")
-        return tx_hash
-    except Exception as e:
-        logger.error(f"[KeeperHub] lock_escrow failed: {e}")
-        # Fall back to a fake hash so the flow continues during demos
-        return _fallback_hash("lock", task_id)
+
+    if deadline is None:
+        deadline = int(time.time()) + 86_400
+
+    client_addr = Account.from_key(CLIENT_PRIVATE_KEY).address
+
+    # Step 1: ensure USDC approval (sync, in thread)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _ensure_usdc_approval, amount_usdc)
+
+    # Step 2: KeeperHub submits lockFor()
+    logger.info(f"[KeeperHub] lock_escrow task={task_id[:8]}… amount={amount_usdc} USDC")
+    tx_hash = await _kh_call(
+        "lockFor",
+        [
+            _to_bytes32(task_id),
+            client_addr,
+            Web3.to_checksum_address(worker_wallet),
+            str(_usdc_units(amount_usdc)),
+            str(deadline),
+        ],
+    )
+    logger.info(f"[KeeperHub] escrow locked — tx: {tx_hash}")
+    return tx_hash
 
 
 async def release_payment(
     task_id: str,
     worker_wallet: str,
     amount_usdc: float,
+    evaluator_sig: str,
 ) -> str:
-    """Release escrowed USDC to the worker after evaluation passes."""
-    logger.info(f"[KeeperHub] release_payment task={task_id} → {worker_wallet} ({amount_usdc} USDC)")
-    try:
-        task_id_bytes32 = _to_bytes32(task_id)
-        # Release requires evaluator signature — use empty bytes for now (contract must allow this)
-        evaluator_sig = "0x" + "00" * 65
-        tx_hash = await _contract_call(
-            function_name="release",
-            function_args=[task_id_bytes32, evaluator_sig],
+    """
+    KeeperHub calls release(taskId, evaluatorSig).
+    evaluator_sig must be a real 65-byte ECDSA hex from the evaluator agent.
+    """
+    if not evaluator_sig:
+        raise RuntimeError(
+            "evaluator_sig is required — evaluator must sign the verdict with its Ethereum key"
         )
-        logger.info(f"[KeeperHub] payment released — tx: {tx_hash}")
-        return tx_hash
-    except Exception as e:
-        logger.error(f"[KeeperHub] release_payment failed: {e}")
-        return _fallback_hash("release", task_id)
+    logger.info(f"[KeeperHub] release_payment task={task_id[:8]}… → {worker_wallet}")
+    tx_hash = await _kh_call(
+        "release",
+        [_to_bytes32(task_id), evaluator_sig],
+    )
+    logger.info(f"[KeeperHub] payment released — tx: {tx_hash}")
+    return tx_hash
 
 
 async def refund(
     task_id: str,
     user_wallet: str,
     amount_usdc: float,
+    evaluator_sig: str,
 ) -> str:
-    """Refund escrowed USDC to the client after evaluation fails."""
-    logger.info(f"[KeeperHub] refund task={task_id} → {user_wallet} ({amount_usdc} USDC)")
-    try:
-        task_id_bytes32 = _to_bytes32(task_id)
-        evaluator_sig   = "0x" + "00" * 65
-        tx_hash = await _contract_call(
-            function_name="refund",
-            function_args=[task_id_bytes32, evaluator_sig],
+    """
+    KeeperHub calls refund(taskId, evaluatorSig).
+    evaluator_sig must be a real 65-byte ECDSA hex from the evaluator agent.
+    """
+    if not evaluator_sig:
+        raise RuntimeError(
+            "evaluator_sig is required — evaluator must sign the verdict with its Ethereum key"
         )
-        logger.info(f"[KeeperHub] refund complete — tx: {tx_hash}")
-        return tx_hash
-    except Exception as e:
-        logger.error(f"[KeeperHub] refund failed: {e}")
-        return _fallback_hash("refund", task_id)
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _to_bytes32(task_id: str) -> str:
-    """Convert a UUID string to a 0x-prefixed 32-byte hex string."""
-    clean = task_id.replace("-", "")
-    # UUID is 32 hex chars, pad to 64 chars for bytes32
-    padded = clean.ljust(64, "0")[:64]
-    return "0x" + padded
-
-
-def _fallback_hash(label: str, task_id: str) -> str:
-    """Demo fallback: deterministic fake hash when KeeperHub is unavailable."""
-    import hashlib, time
-    raw = f"{label}:{task_id}:{time.time()}".encode()
-    return "0x" + hashlib.sha256(raw).hexdigest()
+    logger.info(f"[KeeperHub] refund task={task_id[:8]}…")
+    tx_hash = await _kh_call(
+        "refund",
+        [_to_bytes32(task_id), evaluator_sig],
+    )
+    logger.info(f"[KeeperHub] refund complete — tx: {tx_hash}")
+    return tx_hash

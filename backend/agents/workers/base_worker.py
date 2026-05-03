@@ -317,7 +317,9 @@ class BaseWorker(ABC):
                     "content": (
                         f"You are {self.worker_name}, a professional AI agent specializing in "
                         f"{', '.join(self.capabilities)}. Deliver high-quality, structured work. "
-                        "Be thorough and professional."
+                        "Be thorough and professional. "
+                        "Write in plain text only — do not use markdown formatting, "
+                        "asterisks, bold, italics, bullet symbols, or any special characters."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -337,7 +339,10 @@ class BaseWorker(ABC):
         await self._send_status(client_peer_id, task_id, "in_progress", 90, "Finalizing output…")
         await asyncio.sleep(1.0)   # brief pause for realism
 
-        return "".join(chunks)
+        result = "".join(chunks)
+        # Strip markdown formatting that LLMs sometimes add despite instructions
+        result = result.replace("**", "").replace("__", "")
+        return result
 
     async def _send_status(
         self,

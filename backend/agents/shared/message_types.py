@@ -123,6 +123,9 @@ class EvaluationVerdict(BaseMessage):
     reason: str = ""
     evaluator_peer_id: str = ""
     signature: str = ""
+    # Ethereum ECDSA signature over keccak256(abi.encodePacked(taskId, pass, escrowAddr))
+    # Required by HiveBidEscrow.release() and .refund()
+    evaluator_eth_sig: str = ""
 
 
 # ── Scout Recommendation ──────────────────────────────────────────────────────
